@@ -107,9 +107,18 @@ var sim_result_home_score := 0
 var sim_result_away_score := 0
 var market_candidates: Array[Dictionary] = []
 var transfer_offer: Dictionary = {}
+var asset_http: HTTPRequest
+var asset_queue: Array[Dictionary] = []
+var active_asset_request: Dictionary = {}
+var asset_textures: Dictionary = {}
+var asset_requests_started: Dictionary = {}
 
 func _ready() -> void:
 	rng.randomize()
+	asset_http = HTTPRequest.new()
+	asset_http.timeout = 15.0
+	asset_http.request_completed.connect(_on_asset_download_completed)
+	add_child(asset_http)
 	_load_save()
 	queue_redraw()
 
@@ -916,6 +925,48 @@ func _button(rect: Rect2, text: String, active: bool = false) -> void:
 	draw_rect(rect, Color("4fa26b") if active else Color("515a7a"), false, 1.0)
 	_label(text, rect.position.x + 10, rect.position.y + rect.size.y * 0.62, 15, TEXT, rect.size.x - 20, HORIZONTAL_ALIGNMENT_CENTER)
 
+func _remote_asset_texture(cache_key: String, url: String) -> Texture2D:
+	if asset_textures.has(cache_key): return asset_textures[cache_key] as Texture2D
+	var cache_path := "user://asset-cache/%s.svg" % cache_key
+	if FileAccess.file_exists(cache_path):
+		var cached_bytes := FileAccess.get_file_as_bytes(cache_path)
+		var cached_image := Image.new()
+		if cached_image.load_svg_from_string(cached_bytes.get_string_from_utf8()) == OK:
+			var cached_texture := ImageTexture.create_from_image(cached_image)
+			asset_textures[cache_key] = cached_texture
+			if not asset_requests_started.has(cache_key): _queue_asset_download(cache_key, url)
+			return cached_texture
+	if not asset_requests_started.has(cache_key): _queue_asset_download(cache_key, url)
+	return null
+
+func _queue_asset_download(cache_key: String, url: String) -> void:
+	asset_requests_started[cache_key] = true
+	asset_queue.append({"key":cache_key, "url":url})
+	_start_next_asset_download()
+
+func _start_next_asset_download() -> void:
+	if not active_asset_request.is_empty() or asset_queue.is_empty(): return
+	active_asset_request = asset_queue.pop_front()
+	var error: Error = asset_http.request(str(active_asset_request["url"]))
+	if error != OK:
+		active_asset_request = {}
+		_start_next_asset_download()
+
+func _on_asset_download_completed(_result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if response_code == 200 and not active_asset_request.is_empty():
+		var image := Image.new()
+		if image.load_svg_from_string(body.get_string_from_utf8()) == OK:
+			var key: String = str(active_asset_request["key"])
+			asset_textures[key] = ImageTexture.create_from_image(image)
+			var cache_path := "user://asset-cache/%s.svg" % key
+			var absolute_dir := ProjectSettings.globalize_path(cache_path.get_base_dir())
+			DirAccess.make_dir_recursive_absolute(absolute_dir)
+			var cache_file := FileAccess.open(cache_path, FileAccess.WRITE)
+			if cache_file != null: cache_file.store_buffer(body)
+			queue_redraw()
+	active_asset_request = {}
+	_start_next_asset_download()
+
 func _topbar(title: String, sub: String = "") -> void:
 	draw_rect(Rect2(0, 0, W, 70), WSC_GREEN, true)
 	draw_circle(Vector2(48, 35), 25, Color("f2f2e7"))
@@ -1024,7 +1075,13 @@ func _draw_select() -> void:
 		var row_y: float = 181 + i * 40
 		if i == league_index: draw_rect(Rect2(52, row_y, 546, 39), Color("3c5367"), true)
 		var flag_path := "res://assets/flag-icons/flags/4x3/%s.svg" % LEAGUES[i]["flag"]
-		if ResourceLoader.exists(flag_path): _draw_texture_fit(load(flag_path), Rect2(68, row_y + 8, 28, 20))
+		var flag_rect := Rect2(68, row_y + 8, 28, 20)
+		if ResourceLoader.exists(flag_path): _draw_texture_fit(load(flag_path), flag_rect)
+		else:
+			var flag_code: String = str(LEAGUES[i]["flag"])
+			var flag_texture := _remote_asset_texture("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
+			if flag_texture != null: _draw_texture_fit(flag_texture, flag_rect)
+			else: _draw_flag(flag_code, flag_rect)
 		_label(str(LEAGUES[i]["country"]), 108, row_y + 26, 14, Color("f1f2f4"), 172)
 		_label(str(LEAGUES[i]["name"]), 286, row_y + 26, 12, Color("c1c9d4"), 156)
 		_label("★★★", 480, row_y + 26, 14, WSC_GOLD)
@@ -1062,11 +1119,67 @@ func _draw_crest(team: String, league: Dictionary, rect: Rect2) -> void:
 	if ResourceLoader.exists(path):
 		_draw_texture_fit(load(path), rect)
 	else:
-		var radius: float = minf(rect.size.x, rect.size.y) * 0.45
-		draw_circle(rect.get_center(), radius, Color("e6e9ed"))
-		draw_circle(rect.get_center(), radius * 0.84, Color("35465e"))
-		var letter_size: int = clampi(int(minf(rect.size.x, rect.size.y) * 0.58), 11, 50)
-		_label(team.substr(0, 1), rect.position.x, rect.position.y + rect.size.y * 0.67, letter_size, WSC_GOLD, rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+		var folder: String = str(league["folder"])
+		var remote_path := "logos/%s/%s" % [folder, file_name]
+		var logo_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s.svg" % [folder, file_name.uri_encode()]
+		var logo_texture := _remote_asset_texture(remote_path, logo_url)
+		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
+		else: _draw_fallback_crest(team, rect)
+
+func _draw_fallback_crest(team: String, rect: Rect2) -> void:
+	var side: float = minf(rect.size.x, rect.size.y)
+	var center := rect.get_center()
+	var badge_rect := Rect2(center.x - side * 0.38, center.y - side * 0.45, side * 0.76, side * 0.9)
+	var badge_color: Color = _club_color(team)
+	var points := PackedVector2Array([
+		Vector2(badge_rect.position.x, badge_rect.position.y),
+		Vector2(badge_rect.end.x, badge_rect.position.y),
+		Vector2(badge_rect.end.x, badge_rect.position.y + badge_rect.size.y * 0.68),
+		Vector2(center.x, badge_rect.end.y),
+		Vector2(badge_rect.position.x, badge_rect.position.y + badge_rect.size.y * 0.68)
+	])
+	draw_colored_polygon(points, badge_color)
+	draw_polyline(PackedVector2Array([points[0], points[1], points[2], points[3], points[4], points[0]]), Color("f4f0dd"), maxf(1.0, side * 0.035), true)
+	draw_rect(Rect2(badge_rect.position.x + side * 0.12, badge_rect.position.y + side * 0.12, side * 0.52, side * 0.12), Color("f4f0dd"), true)
+	var initials := ""
+	for word in team.split(" ", false):
+		if not word.is_empty(): initials += word.substr(0, 1)
+	if initials.length() > 3: initials = initials.substr(0, 3)
+	var letter_size: int = clampi(int(side * 0.27), 9, 34)
+	_label(initials, badge_rect.position.x, center.y + side * 0.16, letter_size, Color("f4f0dd"), badge_rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+func _draw_flag(code: String, rect: Rect2) -> void:
+	var colors: Array[Color] = []
+	match code:
+		"br": colors = [Color("168447"), Color("f4d12e"), Color("2456a6")]
+		"gb-eng": colors = [Color("ffffff"), Color("d51e36"), Color("ffffff")]
+		"es": colors = [Color("aa151b"), Color("f1bf00"), Color("aa151b")]
+		"it": colors = [Color("009246"), Color("ffffff"), Color("ce2b37")]
+		"pt": colors = [Color("006600"), Color("ff0000")]
+		"nl": colors = [Color("ae1c28"), Color("ffffff"), Color("21468b")]
+		"ar": colors = [Color("74acdf"), Color("ffffff"), Color("74acdf")]
+		"us": colors = [Color("b22234"), Color("ffffff"), Color("b22234"), Color("ffffff"), Color("b22234"), Color("ffffff"), Color("b22234")]
+		"jp": colors = [Color("ffffff")]
+		"mx": colors = [Color("006847"), Color("ffffff"), Color("ce1126")]
+		_: colors = [Color("ffffff"), Color("68758a"), Color("ffffff")]
+	draw_rect(rect, Color("ffffff"), true)
+	if code == "it" or code == "mx" or code == "pt":
+		var stripe_width: float = rect.size.x / float(colors.size())
+		for i in range(colors.size()):
+			draw_rect(Rect2(rect.position.x + stripe_width * i, rect.position.y, stripe_width + 0.5, rect.size.y), colors[i], true)
+	else:
+		var stripe_height: float = rect.size.y / float(colors.size())
+		for i in range(colors.size()):
+			draw_rect(Rect2(rect.position.x, rect.position.y + stripe_height * i, rect.size.x, stripe_height + 0.5), colors[i], true)
+	if code == "gb-eng":
+		draw_rect(Rect2(rect.position.x + rect.size.x * 0.42, rect.position.y, rect.size.x * 0.16, rect.size.y), Color("d51e36"), true)
+		draw_rect(Rect2(rect.position.x, rect.position.y + rect.size.y * 0.38, rect.size.x, rect.size.y * 0.24), Color("d51e36"), true)
+	elif code == "jp": draw_circle(rect.get_center(), rect.size.y * 0.27, Color("bc002d"))
+	elif code == "br":
+		var diamond := PackedVector2Array([rect.get_center() + Vector2(0, -rect.size.y * 0.32), rect.get_center() + Vector2(rect.size.x * 0.38, 0), rect.get_center() + Vector2(0, rect.size.y * 0.32), rect.get_center() + Vector2(-rect.size.x * 0.38, 0)])
+		draw_colored_polygon(diamond, Color("f4d12e"))
+		draw_circle(rect.get_center(), rect.size.y * 0.16, Color("2456a6"))
+	draw_rect(rect, Color("d7dce2"), false, 1.0)
 
 func _draw_team_badge(team: String, rect: Rect2) -> void:
 	for league in LEAGUES:
@@ -1084,6 +1197,12 @@ func _draw_league_badge(league: Dictionary, rect: Rect2) -> void:
 	if file_name == "": return
 	var path := "res://assets/football-logos-source/logos/%s/%s" % [league["folder"], file_name]
 	if ResourceLoader.exists(path): _draw_texture_fit(load(path), rect)
+	else:
+		var folder: String = str(league["folder"])
+		var cache_key := "logos/%s/%s" % [folder, file_name.trim_suffix(".svg")]
+		var logo_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, file_name.uri_encode()]
+		var logo_texture := _remote_asset_texture(cache_key, logo_url)
+		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
 
 func _draw_texture_fit(texture: Texture2D, rect: Rect2) -> void:
 	var source_size := texture.get_size()
