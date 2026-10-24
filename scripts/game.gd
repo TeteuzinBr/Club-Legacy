@@ -2,6 +2,7 @@ extends Node2D
 
 const W := 1280.0
 const H := 720.0
+const SAVE_SLOT_COUNT := 4
 const FIRST_NAMES := ["Caio", "Rafael", "Davi", "Luca", "Bruno", "Enzo", "Mateus", "Arthur", "Theo", "Nicolas", "João", "Gabriel", "Samuel", "Leonardo", "André", "Marcos", "Daniel", "Ícaro", "Vitor", "Felipe", "Renan", "Alex", "Tomás", "Diego", "Heitor", "Miguel", "Erick", "Murilo", "David", "Lucas"]
 const LAST_NAMES := ["Silva", "Costa", "Almeida", "Santos", "Ferreira", "Lima", "Pereira", "Rocha", "Mendes", "Barros", "Oliveira", "Carvalho", "Ramos", "Freitas", "Azevedo", "Martins", "Nunes", "Moraes", "Teixeira", "Dias", "Moreira", "Castro", "Lopes", "Vieira", "Cardoso", "Correia", "Farias", "Cunha", "Gomes", "Reis"]
 const LEAGUES := [
@@ -115,6 +116,17 @@ var asset_requests_started: Dictionary = {}
 var asset_download_total := 0
 var asset_download_success := 0
 var asset_download_failures := 0
+var asset_notice := ""
+var asset_notice_time := 0.0
+var asset_animation_time := 0.0
+var active_save_slot := 0
+var preferred_save_slot := 0
+var save_screen_mode := "load"
+var pending_new_league := 0
+var pending_new_club := 0
+var overwrite_confirm_slot := 0
+var save_overwrite_confirm := false
+var save_slot_summaries: Array[Dictionary] = []
 
 func _ready() -> void:
 	rng.randomize()
@@ -122,7 +134,8 @@ func _ready() -> void:
 	asset_http.timeout = 15.0
 	asset_http.request_completed.connect(_on_asset_download_completed)
 	add_child(asset_http)
-	_load_save()
+	_migrate_legacy_save()
+	_refresh_save_slot_summaries()
 	queue_redraw()
 
 func _process(delta: float) -> void:
@@ -130,6 +143,8 @@ func _process(delta: float) -> void:
 		_update_match(delta)
 	if banner_time > 0:
 		banner_time = maxf(0, banner_time - delta)
+	if screen == "assets": asset_animation_time += delta
+	if asset_notice_time > 0: asset_notice_time = maxf(0.0, asset_notice_time - delta)
 	queue_redraw()
 
 func _input(event: InputEvent) -> void:
@@ -148,7 +163,7 @@ func _input(event: InputEvent) -> void:
 			elif event.keycode == KEY_RIGHT: league_index = posmod(league_index + 1, LEAGUES.size()); club_index = 0
 			elif event.keycode == KEY_A: club_index = posmod(club_index - 1, LEAGUES[league_index]["teams"].size())
 			elif event.keycode == KEY_D: club_index = posmod(club_index + 1, LEAGUES[league_index]["teams"].size())
-			elif event.keycode == KEY_ENTER: _new_career()
+			elif event.keycode == KEY_ENTER: _begin_new_career()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -187,6 +202,16 @@ func _input(event: InputEvent) -> void:
 			touch_move_vector = ((event.position - touch_move_origin) / 62.0).limit_length(1.0)
 
 func _handle_click(pos: Vector2) -> void:
+	if save_overwrite_confirm:
+		if Rect2(402, 382, 210, 54).has_point(pos):
+			save_overwrite_confirm = false
+			active_save_slot = overwrite_confirm_slot
+			league_index = pending_new_league
+			club_index = pending_new_club
+			_new_career()
+		elif Rect2(632, 382, 210, 54).has_point(pos):
+			save_overwrite_confirm = false
+		return
 	if match_setup_open:
 		if Rect2(460, 374, 170, 58).has_point(pos):
 			match_setup_open = false
@@ -202,25 +227,27 @@ func _handle_click(pos: Vector2) -> void:
 		return
 	match screen:
 		"home":
-			if Rect2(484, 370, 312, 58).has_point(pos): screen = "select"
-			elif Rect2(484, 443, 312, 50).has_point(pos): _ensure_demo_career(); screen = "career"
-			elif Rect2(484, 508, 312, 50).has_point(pos): _ensure_demo_career(); screen = "calendar"
-			elif Rect2(484, 574, 312, 50).has_point(pos): screen = "assets"
+			if Rect2(484, 392, 312, 58).has_point(pos): preferred_save_slot = 0; screen = "select"
+			elif Rect2(484, 465, 312, 50).has_point(pos): save_screen_mode = "load"; _refresh_save_slot_summaries(); screen = "saves"
+			elif Rect2(484, 538, 312, 50).has_point(pos): screen = "assets"
 		"assets":
 			if Rect2(1124, 13, 136, 44).has_point(pos): screen = "home"
 			elif Rect2(384, 330, 512, 58).has_point(pos): _download_all_assets()
 			elif Rect2(384, 406, 512, 58).has_point(pos): _remove_cached_crests()
+		"saves":
+			if Rect2(1124, 13, 136, 44).has_point(pos): screen = "home"
+			else: _handle_save_slot_click(pos)
 		"select":
-			if Rect2(1120, 12, 132, 44).has_point(pos): _new_career()
-			elif Rect2(0, 0, 70, 68).has_point(pos): screen = "home"
+			if Rect2(1120, 12, 132, 44).has_point(pos): _begin_new_career()
+			elif Rect2(0, 0, 70, 68).has_point(pos): preferred_save_slot = 0; screen = "home"
 			elif Rect2(40, 173, 570, 424).has_point(pos):
 				var row := clampi(int((pos.y - 180) / 40), 0, LEAGUES.size() - 1)
 				league_index = row
 				club_index = 0
 			elif Rect2(645, 365, 48, 48).has_point(pos): club_index = posmod(club_index - 1, LEAGUES[league_index]["teams"].size())
 			elif Rect2(1175, 365, 48, 48).has_point(pos): club_index = posmod(club_index + 1, LEAGUES[league_index]["teams"].size())
-			elif Rect2(855, 560, 336, 54).has_point(pos): _new_career()
-			elif Rect2(1130, 18, 118, 42).has_point(pos): screen = "home"
+			elif Rect2(855, 560, 336, 54).has_point(pos): _begin_new_career()
+			elif Rect2(1130, 18, 118, 42).has_point(pos): preferred_save_slot = 0; screen = "home"
 		"squad":
 			if Rect2(1130, 12, 118, 48).has_point(pos): screen = "career"
 			elif Rect2(980, 650, 270, 52).has_point(pos): _cycle_formation(1)
@@ -259,7 +286,20 @@ func _handle_click(pos: Vector2) -> void:
 			elif Rect2(1192, 12, 72, 42).has_point(pos): _simulate_match()
 			elif pos.y > 70 and pos.y < 642: _match_tap(pos)
 
+func _begin_new_career() -> void:
+	pending_new_league = league_index
+	pending_new_club = club_index
+	if preferred_save_slot > 0:
+		active_save_slot = preferred_save_slot
+		preferred_save_slot = 0
+		_new_career()
+	else:
+		save_screen_mode = "new"
+		_refresh_save_slot_summaries()
+		screen = "saves"
+
 func _new_career() -> void:
+	if active_save_slot < 1 or active_save_slot > SAVE_SLOT_COUNT: return
 	club_name = LEAGUES[league_index]["teams"][club_index]
 	_generate_roster()
 	_generate_league()
@@ -286,9 +326,6 @@ func _simulate_next_match() -> void:
 	sim_result_away_score = match_score[1] if user_is_home else match_score[0]
 	_finish_match()
 	sim_result_open = true
-
-func _ensure_demo_career() -> void:
-	if roster.is_empty(): _new_career()
 
 func _generate_roster() -> void:
 	roster.clear()
@@ -345,9 +382,56 @@ func _generate_league() -> void:
 		var last_team: Variant = rotation.pop_back()
 		rotation.insert(1, last_team)
 
-func _load_save() -> void:
+func _migrate_legacy_save() -> void:
+	var first_slot_path := _save_slot_path(1)
+	if FileAccess.file_exists(first_slot_path) or not FileAccess.file_exists("user://career.cfg"): return
+	var legacy_absolute := ProjectSettings.globalize_path("user://career.cfg")
+	var slot_absolute := ProjectSettings.globalize_path(first_slot_path)
+	DirAccess.copy_absolute(legacy_absolute, slot_absolute)
+
+func _save_slot_path(slot: int) -> String:
+	return "user://career_slot_%d.cfg" % slot
+
+func _save_slot_summary(slot: int) -> Dictionary:
+	if slot < 1 or slot > SAVE_SLOT_COUNT: return {"exists":false}
 	var cfg := ConfigFile.new()
-	if cfg.load("user://career.cfg") != OK: return
+	if cfg.load(_save_slot_path(slot)) != OK: return {"exists":false}
+	var saved_club: String = str(cfg.get_value("career", "club", ""))
+	if saved_club.is_empty(): return {"exists":false}
+	return {"exists":true, "club":saved_club, "season":int(cfg.get_value("career", "season", 1)), "budget":int(cfg.get_value("career", "budget", 1800000))}
+
+func _refresh_save_slot_summaries() -> void:
+	save_slot_summaries.clear()
+	for slot in range(1, SAVE_SLOT_COUNT + 1): save_slot_summaries.append(_save_slot_summary(slot))
+
+func _handle_save_slot_click(pos: Vector2) -> void:
+	for i in range(SAVE_SLOT_COUNT):
+		var rect := Rect2(180, 142 + i * 112, 920, 92)
+		if not rect.has_point(pos): continue
+		var slot := i + 1
+		var summary := _save_slot_summary(slot)
+		if save_screen_mode == "load":
+			if bool(summary.get("exists", false)):
+				active_save_slot = slot
+				_load_save(slot)
+			else:
+				preferred_save_slot = slot
+				screen = "select"
+		else:
+			pending_new_league = league_index
+			pending_new_club = club_index
+			if bool(summary.get("exists", false)):
+				overwrite_confirm_slot = slot
+				save_overwrite_confirm = true
+			else:
+				active_save_slot = slot
+				_new_career()
+		return
+
+func _load_save(slot: int) -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(_save_slot_path(slot)) != OK: return
+	active_save_slot = slot
 	club_name = cfg.get_value("career", "club", "")
 	if club_name == "": return
 	league_index = clampi(int(cfg.get_value("career", "league", 0)), 0, LEAGUES.size() - 1)
@@ -412,7 +496,9 @@ func _save_game() -> void:
 	cfg.set_value("career", "table", var_to_str(league_table))
 	cfg.set_value("career", "market", var_to_str(market_candidates))
 	cfg.set_value("career", "offer", var_to_str(transfer_offer))
-	cfg.save("user://career.cfg")
+	if active_save_slot > 0 and active_save_slot <= SAVE_SLOT_COUNT:
+		cfg.save(_save_slot_path(active_save_slot))
+		_refresh_save_slot_summaries()
 
 func _next_fixture() -> Dictionary:
 	if fixtures.is_empty(): return {}
@@ -911,6 +997,7 @@ func _draw() -> void:
 	match screen:
 		"home": _draw_home()
 		"assets": _draw_assets()
+		"saves": _draw_save_slots()
 		"select": _draw_select()
 		"squad": _draw_squad()
 		"career": _draw_career()
@@ -921,6 +1008,7 @@ func _draw() -> void:
 	if banner_time > 0: _draw_banner()
 	if match_setup_open: _draw_match_setup()
 	if sim_result_open: _draw_sim_result()
+	if save_overwrite_confirm: _draw_overwrite_confirmation()
 
 func _label(text: String, x: float, y: float, size: int, color: Color = TEXT, width: float = -1, align: int = HORIZONTAL_ALIGNMENT_LEFT) -> void:
 	draw_string(ThemeDB.fallback_font, Vector2(x, y), text, align, width, size, color)
@@ -951,6 +1039,8 @@ func _download_all_assets() -> void:
 	asset_requests_started.clear()
 	asset_download_success = 0
 	asset_download_failures = 0
+	asset_notice = ""
+	asset_notice_time = 0.0
 	asset_queue.clear()
 	for league in LEAGUES:
 		var folder: String = str(league["folder"])
@@ -963,6 +1053,7 @@ func _download_all_assets() -> void:
 			_queue_asset_download(key, url)
 	asset_download_total = asset_queue.size() + (1 if not active_asset_request.is_empty() else 0)
 	if asset_download_total == 0: asset_download_total = asset_download_success + asset_download_failures
+	if active_asset_request.is_empty() and asset_queue.is_empty(): _set_asset_completion_notice()
 
 func _remove_cached_crests() -> void:
 	var flags_left: Array[Dictionary] = []
@@ -980,7 +1071,16 @@ func _remove_cached_crests() -> void:
 	asset_download_total = asset_queue.size() + (1 if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)) else 0)
 	asset_download_success = 0
 	asset_download_failures = 0
+	asset_notice = "Escudos removidos deste aparelho."
+	asset_notice_time = 4.0
 	queue_redraw()
+
+func _set_asset_completion_notice() -> void:
+	if asset_download_failures == 0:
+		asset_notice = "Download concluído com sucesso!"
+	else:
+		asset_notice = "Download concluído: %d imagem(ns) não disponível(is)." % asset_download_failures
+	asset_notice_time = 5.0
 
 func _remove_cached_directory(path: String) -> void:
 	var directory := DirAccess.open(path)
@@ -1047,6 +1147,7 @@ func _on_asset_download_completed(_result: int, response_code: int, _headers: Pa
 	active_asset_request = {}
 	queue_redraw()
 	_start_next_asset_download()
+	if active_asset_request.is_empty() and asset_queue.is_empty() and asset_download_total > 0: _set_asset_completion_notice()
 
 func _topbar(title: String, sub: String = "") -> void:
 	draw_rect(Rect2(0, 0, W, 70), WSC_GREEN, true)
@@ -1130,20 +1231,58 @@ func _mini_player_card(index: int, rect: Rect2, reserve: bool = false) -> void:
 
 func _draw_home() -> void:
 	draw_rect(Rect2(0, 0, W, H), WSC_NAVY, true)
-	_wsc_team_header("VOLTAR")
+	draw_rect(Rect2(0, 0, W, 70), WSC_GREEN, true)
+	draw_circle(Vector2(48, 35), 25, Color("f2f2e7"))
+	draw_circle(Vector2(48, 35), 19, Color("226c46"))
+	_label("⚽", 31, 43, 20, TEXT)
+	_label("CLUB LEGACY", 88, 43, 20, TEXT)
 	draw_rect(Rect2(64, 112, 1152, 530), Color("202543"), true)
 	_label("CLUB LEGACY", 0, 220, 22, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("CARREIRA", 0, 303, 54, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("Escolha um clube para começar sua temporada", 0, 344, 17, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	_button(Rect2(484, 392, 312, 58), "NOVA CARREIRA", true)
-	_button(Rect2(484, 465, 312, 50), "CONTINUAR CARREIRA")
-	_button(Rect2(484, 530, 312, 50), "CALENDÁRIO")
-	_button(Rect2(484, 574, 312, 50), "IMAGENS E ARMAZENAMENTO")
+	_button(Rect2(484, 465, 312, 50), "CARREIRAS SALVAS")
+	_button(Rect2(484, 538, 312, 50), "IMAGENS E ARMAZENAMENTO")
+
+func _draw_save_slots() -> void:
+	draw_rect(Rect2(0, 0, W, H), WSC_NAVY, true)
+	_topbar("CARREIRAS SALVAS", "ESCOLHA UM DOS QUATRO SLOTS")
+	_panel(Rect2(140, 92, 1000, 550), Color("202543"))
+	_label("Quatro espaços para suas carreiras", 0, 124, 20, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
+	for i in range(SAVE_SLOT_COUNT):
+		var slot := i + 1
+		var y: float = 142 + i * 112
+		var card := Rect2(180, y, 920, 92)
+		var summary: Dictionary = save_slot_summaries[i] if i < save_slot_summaries.size() else {"exists":false}
+		draw_rect(card, Color("2a2e4c"), true)
+		draw_rect(card, Color("414765"), false, 1.0)
+		_label("SLOT %d" % slot, 198, y + 25, 12, WSC_GOLD)
+		if bool(summary.get("exists", false)):
+			var team: String = str(summary.get("club", "Clube"))
+			_draw_team_badge(team, Rect2(270, y + 14, 62, 62))
+			_label(team, 350, y + 40, 19, TEXT, 420)
+			_label("Temporada %d    •    Dinheiro: $%s" % [int(summary.get("season", 1)), _money(int(summary.get("budget", 0)))], 350, y + 67, 14, MUTED, 450)
+			_button(Rect2(850, y + 18, 220, 56), "CARREGAR" if save_screen_mode == "load" else "ESCOLHER SLOT", save_screen_mode == "load")
+		else:
+			_label("Vazio  •  escolha um clube para começar", 270, y + 53, 16, MUTED, 520)
+			_button(Rect2(850, y + 18, 220, 56), "NOVO SAVE")
+	_label("A carreira é salva automaticamente no slot escolhido.", 0, 610, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
+
+func _draw_overwrite_confirmation() -> void:
+	draw_rect(Rect2(0, 0, W, H), Color(0.02, 0.03, 0.08, 0.82), true)
+	_panel(Rect2(350, 230, 580, 260), Color("20243f"))
+	_label("SUBSTITUIR CARREIRA?", 0, 292, 24, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("O Slot %d será substituído pelo save de %s." % [overwrite_confirm_slot, LEAGUES[pending_new_league]["teams"][pending_new_club]], 385, 342, 16, TEXT, 510, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Essa ação apaga a carreira que está nesse slot.", 0, 372, 14, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_button(Rect2(402, 382, 210, 54), "SUBSTITUIR SLOT", true)
+	_button(Rect2(632, 382, 210, 54), "CANCELAR")
 
 func _draw_assets() -> void:
 	draw_rect(Rect2(0, 0, W, H), WSC_NAVY, true)
 	_topbar("IMAGENS E ARMAZENAMENTO", "BAIXE OU REMOVA ARQUIVOS DO JOGO")
 	_panel(Rect2(220, 130, 840, 500), Color("202543"))
+	var glow_alpha := 0.16 + 0.08 * sin(asset_animation_time * 2.4)
+	draw_rect(Rect2(220, 130, 840, 500), Color(0.35, 0.72, 0.58, glow_alpha), false, 2.0)
 	_label("Bandeiras e escudos", 0, 205, 30, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("Baixe as imagens quando quiser. Elas ficam salvas neste aparelho.", 0, 246, 17, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("Sem download, o jogo mostra versões simples que ocupam menos espaço.", 0, 274, 15, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1152,19 +1291,35 @@ func _draw_assets() -> void:
 	_button(Rect2(384, 406, 512, 58), "REMOVER ESCUDOS BAIXADOS")
 	if is_downloading:
 		var completed := asset_download_success + asset_download_failures
-		_label("Baixando imagens: %d de %d  •  %d falhas" % [completed, asset_download_total, asset_download_failures], 0, 510, 16, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+		var percent := int(round(100.0 * float(completed) / float(maxi(1, asset_download_total))))
+		var progress_bar := Rect2(280, 484, 720, 18)
+		draw_rect(progress_bar, Color("11182c"), true)
+		draw_rect(Rect2(progress_bar.position.x, progress_bar.position.y, progress_bar.size.x * float(percent) / 100.0, progress_bar.size.y), WSC_GREEN, true)
+		var shine_x := progress_bar.position.x + fposmod(asset_animation_time * 260.0, progress_bar.size.x)
+		if percent < 100: draw_rect(Rect2(shine_x - 18, progress_bar.position.y + 2, 36, progress_bar.size.y - 4), Color(1, 1, 1, 0.28), true)
+		draw_rect(progress_bar, Color("64708e"), false, 1.0)
+		_label("%d%%" % percent, 0, 533, 20, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+		_label("Baixando: %d de %d  •  %d falhas" % [completed, asset_download_total, asset_download_failures], 0, 562, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
 	elif asset_download_total > 0:
-		_label("Download concluído: %d imagens salvas  •  %d falhas" % [asset_download_success, asset_download_failures], 0, 510, 16, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+		var finished_bar := Rect2(280, 484, 720, 18)
+		draw_rect(finished_bar, WSC_GREEN if asset_download_failures == 0 else Color("bf8f28"), true)
+		draw_rect(finished_bar, Color("64708e"), false, 1.0)
+		_label("100%", 0, 533, 20, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+		var finished_notice_alpha := 0.72 + 0.28 * absf(sin(asset_animation_time * 4.0)) if asset_notice_time > 0 else 1.0
+		var finished_notice_color := Color("8af0bd", finished_notice_alpha) if asset_download_failures == 0 else Color("ffd27a", finished_notice_alpha)
+		_label(asset_notice if asset_notice != "" else "Download finalizado.", 0, 562, 14, finished_notice_color, W, HORIZONTAL_ALIGNMENT_CENTER)
 	else:
-		_label("Remover escudos preserva as bandeiras baixadas.", 0, 510, 16, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("Os escudos são baixados para os clubes disponíveis no jogo.", 0, 546, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
+		var idle_notice_alpha := 0.72 + 0.28 * absf(sin(asset_animation_time * 4.0)) if asset_notice_time > 0 else 1.0
+		var idle_notice_color := Color("8af0bd", idle_notice_alpha) if asset_notice_time > 0 else MUTED
+		_label(asset_notice if asset_notice != "" else "Remover escudos preserva as bandeiras baixadas.", 0, 526, 15, idle_notice_color, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Escudos dos clubes e bandeiras das ligas são salvos neste aparelho.", 0, 566, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_select() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("e8e9ec"), true)
 	draw_rect(Rect2(0, 0, W, 68), Color("5bc5ae"), true)
 	_label("‹", 22, 48, 38, TEXT)
 	_label("CLUB LEGACY", 90, 43, 22, Color("153d48"))
-	_button(Rect2(1120, 12, 132, 44), "CONTINUAR", true)
+	_button(Rect2(1120, 12, 132, 44), "ESCOLHER SLOT", true)
 	_label("Nova Carreira  /  Escolher Liga", 0, 100, 21, Color("263849"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	var league: Dictionary = LEAGUES[league_index]
 	_panel(Rect2(40, 126, 570, 495), Color("17233a"))
