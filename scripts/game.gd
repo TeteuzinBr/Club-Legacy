@@ -116,9 +116,11 @@ var asset_requests_started: Dictionary = {}
 var asset_download_total := 0
 var asset_download_success := 0
 var asset_download_failures := 0
+var asset_download_abort := false
 var asset_notice := ""
 var asset_notice_time := 0.0
 var asset_animation_time := 0.0
+var asset_failure_hint := ""
 var active_save_slot := 0
 var preferred_save_slot := 0
 var save_screen_mode := "load"
@@ -149,7 +151,9 @@ func _process(delta: float) -> void:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		if screen == "match":
+		if screen == "assets" and event.keycode == KEY_ESCAPE:
+			_request_assets_back()
+		elif screen == "match":
 			_handle_match_key(event.keycode)
 		elif screen == "squad":
 			if event.keycode == KEY_LEFT: _cycle_formation(-1)
@@ -231,7 +235,7 @@ func _handle_click(pos: Vector2) -> void:
 			elif Rect2(484, 465, 312, 50).has_point(pos): save_screen_mode = "load"; _refresh_save_slot_summaries(); screen = "saves"
 			elif Rect2(484, 538, 312, 50).has_point(pos): screen = "assets"
 		"assets":
-			if Rect2(1124, 13, 136, 44).has_point(pos): screen = "home"
+			if Rect2(1124, 13, 136, 44).has_point(pos): _request_assets_back()
 			elif Rect2(384, 330, 512, 58).has_point(pos): _download_all_assets()
 			elif Rect2(384, 406, 512, 58).has_point(pos): _remove_cached_crests()
 		"saves":
@@ -1039,13 +1043,20 @@ func _download_all_assets() -> void:
 	asset_requests_started.clear()
 	asset_download_success = 0
 	asset_download_failures = 0
+	asset_download_abort = false
 	asset_notice = ""
 	asset_notice_time = 0.0
+	asset_failure_hint = ""
 	asset_queue.clear()
 	for league in LEAGUES:
 		var folder: String = str(league["folder"])
 		var flag_code: String = str(league["flag"])
 		_queue_asset_download("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
+		var competition_file := _league_badge_file(league)
+		if competition_file != "":
+			var competition_key := "logos/%s/%s" % [folder, competition_file.trim_suffix(".svg")]
+			var competition_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, competition_file.uri_encode()]
+			_queue_asset_download(competition_key, competition_url)
 		for team in league["teams"]:
 			var file_name := _logo_file_name(str(team))
 			var key := "logos/%s/%s" % [folder, file_name]
@@ -1075,12 +1086,32 @@ func _remove_cached_crests() -> void:
 	asset_notice_time = 4.0
 	queue_redraw()
 
+func _request_assets_back() -> void:
+	if not active_asset_request.is_empty() or not asset_queue.is_empty():
+		asset_notice = "Aguarde o fim do download para voltar."
+		asset_notice_time = 3.0
+		queue_redraw()
+		return
+	screen = "home"
+
 func _set_asset_completion_notice() -> void:
 	if asset_download_failures == 0:
 		asset_notice = "Download concluído com sucesso!"
 	else:
-		asset_notice = "Download concluído: %d imagem(ns) não disponível(is)." % asset_download_failures
+		asset_notice = "Download concluído: %d imagem(ns) não disponível(is). %s" % [asset_download_failures, asset_failure_hint]
 	asset_notice_time = 5.0
+
+func _asset_request_error(result: int, response_code: int) -> String:
+	if response_code == 404: return "Arquivo não encontrado na fonte."
+	if result == HTTPRequest.RESULT_CANT_CONNECT or result == HTTPRequest.RESULT_CANT_RESOLVE:
+		return "Sem conexão. No Android, ative INTERNET na exportação e gere um novo APK."
+	if result == HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR: return "Falha segura de conexão com a fonte."
+	if result == HTTPRequest.RESULT_TIMEOUT: return "A conexão expirou. Verifique a internet e tente novamente."
+	if response_code > 0: return "A fonte respondeu com erro HTTP %d." % response_code
+	return "Falha de rede (código %d)." % result
+
+func _asset_connection_failed(result: int) -> bool:
+	return result == HTTPRequest.RESULT_CANT_CONNECT or result == HTTPRequest.RESULT_CANT_RESOLVE or result == HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR or result == HTTPRequest.RESULT_TIMEOUT
 
 func _remove_cached_directory(path: String) -> void:
 	var directory := DirAccess.open(path)
@@ -1112,7 +1143,15 @@ func _logo_file_name(team: String) -> String:
 	}
 	return str(aliases.get(team, team.replace(" ", "_")))
 
+func _league_badge_file(league: Dictionary) -> String:
+	var badge_files := {
+		"Brasil":"Brazilian_Serie_A.svg", "Espanha":"La_Liga.svg", "Portugal":"Primeira_Liga.svg",
+		"Países Baixos":"Eredivisie.svg", "Argentina":"Argentina_Primera_Division.svg", "México":"Liga_MX.svg"
+	}
+	return str(badge_files.get(str(league["country"]), ""))
+
 func _queue_asset_download(cache_key: String, url: String) -> void:
+	if asset_download_abort: return
 	asset_requests_started[cache_key] = true
 	if not active_asset_request.is_empty() or not asset_queue.is_empty():
 		asset_queue.append({"key":cache_key, "url":url})
@@ -1121,15 +1160,19 @@ func _queue_asset_download(cache_key: String, url: String) -> void:
 	_start_next_asset_download()
 
 func _start_next_asset_download() -> void:
-	if not active_asset_request.is_empty() or asset_queue.is_empty(): return
+	if asset_download_abort or not active_asset_request.is_empty() or asset_queue.is_empty(): return
 	active_asset_request = asset_queue.pop_front()
 	var error: Error = asset_http.request(str(active_asset_request["url"]))
 	if error != OK:
 		asset_download_failures += 1
+		asset_failure_hint = "Falha ao iniciar download: %s" % error_string(error)
+		asset_download_abort = true
+		asset_queue.clear()
+		asset_download_total = asset_download_success + asset_download_failures
 		active_asset_request = {}
 		_start_next_asset_download()
 
-func _on_asset_download_completed(_result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+func _on_asset_download_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)):
 		if response_code == 200:
 			var image := Image.new()
@@ -1140,10 +1183,22 @@ func _on_asset_download_completed(_result: int, response_code: int, _headers: Pa
 				var absolute_dir := ProjectSettings.globalize_path(cache_path.get_base_dir())
 				DirAccess.make_dir_recursive_absolute(absolute_dir)
 				var cache_file := FileAccess.open(cache_path, FileAccess.WRITE)
-				if cache_file != null: cache_file.store_buffer(body)
-				asset_download_success += 1
-			else: asset_download_failures += 1
-		else: asset_download_failures += 1
+				if cache_file != null:
+					cache_file.store_buffer(body)
+					asset_download_success += 1
+				else:
+					asset_download_failures += 1
+					asset_failure_hint = "Não foi possível salvar no aparelho."
+			else:
+				asset_download_failures += 1
+				asset_failure_hint = "A fonte enviou um arquivo SVG inválido."
+		else:
+			asset_download_failures += 1
+			asset_failure_hint = _asset_request_error(result, response_code)
+			if _asset_connection_failed(result):
+				asset_download_abort = true
+				asset_queue.clear()
+				asset_download_total = asset_download_success + asset_download_failures
 	active_asset_request = {}
 	queue_redraw()
 	_start_next_asset_download()
@@ -1283,11 +1338,11 @@ func _draw_assets() -> void:
 	_panel(Rect2(220, 130, 840, 500), Color("202543"))
 	var glow_alpha := 0.16 + 0.08 * sin(asset_animation_time * 2.4)
 	draw_rect(Rect2(220, 130, 840, 500), Color(0.35, 0.72, 0.58, glow_alpha), false, 2.0)
-	_label("Bandeiras e escudos", 0, 205, 30, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Bandeiras, escudos e competições", 0, 205, 30, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("Baixe as imagens quando quiser. Elas ficam salvas neste aparelho.", 0, 246, 17, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	_label("Sem download, o jogo mostra versões simples que ocupam menos espaço.", 0, 274, 15, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	var is_downloading := not active_asset_request.is_empty() or not asset_queue.is_empty()
-	_button(Rect2(384, 330, 512, 58), "BAIXAR / ATUALIZAR ESCUDOS E BANDEIRAS", not is_downloading)
+	_button(Rect2(384, 330, 512, 58), "BAIXAR / ATUALIZAR IMAGENS DO JOGO", not is_downloading)
 	_button(Rect2(384, 406, 512, 58), "REMOVER ESCUDOS BAIXADOS")
 	if is_downloading:
 		var completed := asset_download_success + asset_download_failures
@@ -1307,12 +1362,14 @@ func _draw_assets() -> void:
 		_label("100%", 0, 533, 20, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
 		var finished_notice_alpha := 0.72 + 0.28 * absf(sin(asset_animation_time * 4.0)) if asset_notice_time > 0 else 1.0
 		var finished_notice_color := Color("8af0bd", finished_notice_alpha) if asset_download_failures == 0 else Color("ffd27a", finished_notice_alpha)
-		_label(asset_notice if asset_notice != "" else "Download finalizado.", 0, 562, 14, finished_notice_color, W, HORIZONTAL_ALIGNMENT_CENTER)
+		_label("Download concluído com sucesso!" if asset_download_failures == 0 else "Download concluído com falhas.", 0, 562, 14, finished_notice_color, W, HORIZONTAL_ALIGNMENT_CENTER)
+		if asset_download_failures > 0: _label(asset_failure_hint, 250, 590, 12, Color("ffd27a"), 780, HORIZONTAL_ALIGNMENT_CENTER)
 	else:
 		var idle_notice_alpha := 0.72 + 0.28 * absf(sin(asset_animation_time * 4.0)) if asset_notice_time > 0 else 1.0
 		var idle_notice_color := Color("8af0bd", idle_notice_alpha) if asset_notice_time > 0 else MUTED
 		_label(asset_notice if asset_notice != "" else "Remover escudos preserva as bandeiras baixadas.", 0, 526, 15, idle_notice_color, W, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("Escudos dos clubes e bandeiras das ligas são salvos neste aparelho.", 0, 566, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
+	if is_downloading and asset_notice_time > 0: _label(asset_notice, 0, 590, 14, Color("ffd27a"), W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Escudos, competições e bandeiras são salvos neste aparelho.", 0, 610, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_select() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("e8e9ec"), true)
@@ -1429,24 +1486,28 @@ func _draw_team_badge(team: String, rect: Rect2) -> void:
 			return
 
 func _draw_league_badge(league: Dictionary, rect: Rect2) -> void:
-	var badge_files := {
-		"Brasil":"Brazilian_Serie_A.svg", "Inglaterra":"Premier_League.svg", "Espanha":"La_Liga.svg", "Itália":"Serie_A.svg",
-		"Portugal":"Primeira_Liga.svg", "Países Baixos":"Eredivisie.svg", "Argentina":"Argentina_Primera_Division.svg",
-		"Estados Unidos":"MLS_-_Major_League_Soccer.svg", "Japão":"J3_League.svg", "México":"Liga_MX.svg"
-	}
-	var file_name: String = badge_files.get(str(league["country"]), "")
-	if file_name == "": return
-	var path := "res://assets/football-logos-source/logos/%s/%s" % [league["folder"], file_name]
-	if ResourceLoader.exists(path): _draw_texture_fit(load(path), rect)
-	else:
+	var file_name := _league_badge_file(league)
+	if file_name != "":
 		var folder: String = str(league["folder"])
+		var path := "res://assets/football-logos-source/logos/%s/%s" % [folder, file_name]
+		if ResourceLoader.exists(path):
+			_draw_texture_fit(load(path), rect)
+			return
 		var cache_key := "logos/%s/%s" % [folder, file_name.trim_suffix(".svg")]
 		var logo_texture := _cached_asset_texture(cache_key)
-		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
-		else:
-			draw_circle(rect.get_center(), minf(rect.size.x, rect.size.y) * 0.45, Color("35465e"))
-			var league_initial: String = str(league["country"]).substr(0, 1)
-			_label(league_initial, rect.position.x, rect.position.y + rect.size.y * 0.68, 20, WSC_GOLD, rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+		if logo_texture != null:
+			_draw_texture_fit(logo_texture, rect)
+			return
+	var country: String = str(league["country"])
+	var initials := {"Brasil":"BRA", "Inglaterra":"PL", "Espanha":"LALIGA", "Itália":"SA", "Portugal":"PT", "Países Baixos":"ERE", "Argentina":"ARG", "Estados Unidos":"MLS", "Japão":"J3", "México":"MX"}
+	var colors := {"Brasil":Color("168447"), "Inglaterra":Color("5c2d91"), "Espanha":Color("e6533e"), "Itália":Color("1769aa"), "Portugal":Color("006600"), "Países Baixos":Color("e87525"), "Argentina":Color("74acdf"), "Estados Unidos":Color("26376f"), "Japão":Color("bc002d"), "México":Color("006847")}
+	var side: float = minf(rect.size.x, rect.size.y)
+	var center := rect.get_center()
+	var badge := Rect2(center.x - side * 0.4, center.y - side * 0.45, side * 0.8, side * 0.9)
+	draw_rect(badge, colors.get(country, Color("35465e")), true)
+	draw_rect(badge, Color("f2f2e7"), false, 1.0)
+	draw_rect(Rect2(badge.position.x, badge.position.y + side * 0.12, badge.size.x, side * 0.1), Color("f1c82f"), true)
+	_label(str(initials.get(country, "LIGA")), badge.position.x, center.y + side * 0.2, 10, Color("ffffff"), badge.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_texture_fit(texture: Texture2D, rect: Rect2) -> void:
 	var source_size := texture.get_size()
