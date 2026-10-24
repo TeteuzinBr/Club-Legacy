@@ -112,6 +112,9 @@ var asset_queue: Array[Dictionary] = []
 var active_asset_request: Dictionary = {}
 var asset_textures: Dictionary = {}
 var asset_requests_started: Dictionary = {}
+var asset_download_total := 0
+var asset_download_success := 0
+var asset_download_failures := 0
 
 func _ready() -> void:
 	rng.randomize()
@@ -202,6 +205,11 @@ func _handle_click(pos: Vector2) -> void:
 			if Rect2(484, 370, 312, 58).has_point(pos): screen = "select"
 			elif Rect2(484, 443, 312, 50).has_point(pos): _ensure_demo_career(); screen = "career"
 			elif Rect2(484, 508, 312, 50).has_point(pos): _ensure_demo_career(); screen = "calendar"
+			elif Rect2(484, 574, 312, 50).has_point(pos): screen = "assets"
+		"assets":
+			if Rect2(1124, 13, 136, 44).has_point(pos): screen = "home"
+			elif Rect2(384, 330, 512, 58).has_point(pos): _download_all_assets()
+			elif Rect2(384, 406, 512, 58).has_point(pos): _remove_cached_crests()
 		"select":
 			if Rect2(1120, 12, 132, 44).has_point(pos): _new_career()
 			elif Rect2(0, 0, 70, 68).has_point(pos): screen = "home"
@@ -902,6 +910,7 @@ func _draw() -> void:
 	draw_rect(Rect2(0, 0, W, H), BG, true)
 	match screen:
 		"home": _draw_home()
+		"assets": _draw_assets()
 		"select": _draw_select()
 		"squad": _draw_squad()
 		"career": _draw_career()
@@ -925,7 +934,7 @@ func _button(rect: Rect2, text: String, active: bool = false) -> void:
 	draw_rect(rect, Color("4fa26b") if active else Color("515a7a"), false, 1.0)
 	_label(text, rect.position.x + 10, rect.position.y + rect.size.y * 0.62, 15, TEXT, rect.size.x - 20, HORIZONTAL_ALIGNMENT_CENTER)
 
-func _remote_asset_texture(cache_key: String, url: String) -> Texture2D:
+func _cached_asset_texture(cache_key: String) -> Texture2D:
 	if asset_textures.has(cache_key): return asset_textures[cache_key] as Texture2D
 	var cache_path := "user://asset-cache/%s.svg" % cache_key
 	if FileAccess.file_exists(cache_path):
@@ -934,13 +943,80 @@ func _remote_asset_texture(cache_key: String, url: String) -> Texture2D:
 		if cached_image.load_svg_from_string(cached_bytes.get_string_from_utf8()) == OK:
 			var cached_texture := ImageTexture.create_from_image(cached_image)
 			asset_textures[cache_key] = cached_texture
-			if not asset_requests_started.has(cache_key): _queue_asset_download(cache_key, url)
 			return cached_texture
-	if not asset_requests_started.has(cache_key): _queue_asset_download(cache_key, url)
 	return null
+
+func _download_all_assets() -> void:
+	if not active_asset_request.is_empty() or not asset_queue.is_empty(): return
+	asset_requests_started.clear()
+	asset_download_success = 0
+	asset_download_failures = 0
+	asset_queue.clear()
+	for league in LEAGUES:
+		var folder: String = str(league["folder"])
+		var flag_code: String = str(league["flag"])
+		_queue_asset_download("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
+		for team in league["teams"]:
+			var file_name := _logo_file_name(str(team))
+			var key := "logos/%s/%s" % [folder, file_name]
+			var url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s.svg" % [folder, file_name.uri_encode()]
+			_queue_asset_download(key, url)
+	asset_download_total = asset_queue.size() + (1 if not active_asset_request.is_empty() else 0)
+	if asset_download_total == 0: asset_download_total = asset_download_success + asset_download_failures
+
+func _remove_cached_crests() -> void:
+	var flags_left: Array[Dictionary] = []
+	for item in asset_queue:
+		if not str(item.get("key", "")).begins_with("logos/"): flags_left.append(item)
+	asset_queue = flags_left
+	if not active_asset_request.is_empty() and str(active_asset_request.get("key", "")).begins_with("logos/"):
+		active_asset_request["discard"] = true
+	for key in asset_textures.keys():
+		if str(key).begins_with("logos/"): asset_textures.erase(key)
+	for key in asset_requests_started.keys():
+		if str(key).begins_with("logos/"): asset_requests_started.erase(key)
+	var logo_cache_path := "user://asset-cache/logos"
+	_remove_cached_directory(logo_cache_path)
+	asset_download_total = asset_queue.size() + (1 if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)) else 0)
+	asset_download_success = 0
+	asset_download_failures = 0
+	queue_redraw()
+
+func _remove_cached_directory(path: String) -> void:
+	var directory := DirAccess.open(path)
+	if directory == null: return
+	directory.list_dir_begin()
+	var entry := directory.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var child_path := path.path_join(entry)
+			if directory.current_is_dir(): _remove_cached_directory(child_path)
+			else: directory.remove(entry)
+		entry = directory.get_next()
+	directory.list_dir_end()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+func _logo_file_name(team: String) -> String:
+	var aliases := {
+		"Atlético-MG":"Atlético_Mineiro", "São Paulo":"São_Paulo", "Santos":"Santos_FC", "Grêmio":"Grêmio", "Internacional":"Internacional",
+		"Liverpool":"Liverpool_FC", "Manchester City":"Manchester_City", "Manchester United":"Manchester_United", "Newcastle":"Newcastle_United",
+		"Atlético de Madrid":"Atletico_Madrid", "Real Madrid":"Real_Madrid", "Real Sociedad":"Real_Sociedad", "Athletic Club":"Athletic_Club_Bilbao",
+		"Milan":"Milan", "Inter":"Inter", "Roma":"AS_Roma", "Porto":"FC_Porto", "Sporting CP":"Sporting_CP", "Vitória SC":"Vitória_de_Guimarães",
+		"Braga":"SC_Braga", "Famalicão":"Famalicao", "PSV":"PSV_Eindhoven", "Utrecht":"FC_Utrecht", "Heerenveen":"sc_Heerenveen", "AZ Alkmaar":"AZ_Alkmaar", "Sparta Rotterdam":"Sparta_Rotterdam",
+		"Boca Juniors":"Boca_Juniors", "River Plate":"River_Plate", "Racing Club":"Racing_Club", "Independiente":"Independiente", "Estudiantes":"Estudiantes_de_La_Plata", "Lanús":"Lanús", "San Lorenzo":"San_Lorenzo_de_Almagro",
+		"Inter Miami":"Inter_Miami_CF", "LA Galaxy":"Los_Angeles_Galaxy", "LAFC":"Los_Angeles_Football_Club", "Seattle Sounders":"Seattle_Sounders_FC",
+		"New York City":"New_York_City_Football_Club", "Portland Timbers":"Portland_Timbers", "Yokohama F. Marinos":"Yokohama_F._Marinos",
+		"Kashima Antlers":"Kashima_Antlers", "Urawa Reds":"Urawa_Reds", "Kawasaki Frontale":"Kawasaki_Frontale",
+		"Gamba Osaka":"Gamba_Osaka", "Cerezo Osaka":"Cerezo_Osaka", "Vissel Kobe":"Vissel_Kobe", "FC Tokyo":"FC_Tokyo",
+		"América":"Club_America", "Guadalajara":"CD_Guadalajara", "Cruz Azul":"Cruz_Azul", "Tigres":"Tigres_UANL", "Pumas":"UNAM_Pumas"
+	}
+	return str(aliases.get(team, team.replace(" ", "_")))
 
 func _queue_asset_download(cache_key: String, url: String) -> void:
 	asset_requests_started[cache_key] = true
+	if not active_asset_request.is_empty() or not asset_queue.is_empty():
+		asset_queue.append({"key":cache_key, "url":url})
+		return
 	asset_queue.append({"key":cache_key, "url":url})
 	_start_next_asset_download()
 
@@ -949,22 +1025,27 @@ func _start_next_asset_download() -> void:
 	active_asset_request = asset_queue.pop_front()
 	var error: Error = asset_http.request(str(active_asset_request["url"]))
 	if error != OK:
+		asset_download_failures += 1
 		active_asset_request = {}
 		_start_next_asset_download()
 
 func _on_asset_download_completed(_result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-	if response_code == 200 and not active_asset_request.is_empty():
-		var image := Image.new()
-		if image.load_svg_from_string(body.get_string_from_utf8()) == OK:
-			var key: String = str(active_asset_request["key"])
-			asset_textures[key] = ImageTexture.create_from_image(image)
-			var cache_path := "user://asset-cache/%s.svg" % key
-			var absolute_dir := ProjectSettings.globalize_path(cache_path.get_base_dir())
-			DirAccess.make_dir_recursive_absolute(absolute_dir)
-			var cache_file := FileAccess.open(cache_path, FileAccess.WRITE)
-			if cache_file != null: cache_file.store_buffer(body)
-			queue_redraw()
+	if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)):
+		if response_code == 200:
+			var image := Image.new()
+			if image.load_svg_from_string(body.get_string_from_utf8()) == OK:
+				var key: String = str(active_asset_request["key"])
+				asset_textures[key] = ImageTexture.create_from_image(image)
+				var cache_path := "user://asset-cache/%s.svg" % key
+				var absolute_dir := ProjectSettings.globalize_path(cache_path.get_base_dir())
+				DirAccess.make_dir_recursive_absolute(absolute_dir)
+				var cache_file := FileAccess.open(cache_path, FileAccess.WRITE)
+				if cache_file != null: cache_file.store_buffer(body)
+				asset_download_success += 1
+			else: asset_download_failures += 1
+		else: asset_download_failures += 1
 	active_asset_request = {}
+	queue_redraw()
 	_start_next_asset_download()
 
 func _topbar(title: String, sub: String = "") -> void:
@@ -1057,6 +1138,26 @@ func _draw_home() -> void:
 	_button(Rect2(484, 392, 312, 58), "NOVA CARREIRA", true)
 	_button(Rect2(484, 465, 312, 50), "CONTINUAR CARREIRA")
 	_button(Rect2(484, 530, 312, 50), "CALENDÁRIO")
+	_button(Rect2(484, 574, 312, 50), "IMAGENS E ARMAZENAMENTO")
+
+func _draw_assets() -> void:
+	draw_rect(Rect2(0, 0, W, H), WSC_NAVY, true)
+	_topbar("IMAGENS E ARMAZENAMENTO", "BAIXE OU REMOVA ARQUIVOS DO JOGO")
+	_panel(Rect2(220, 130, 840, 500), Color("202543"))
+	_label("Bandeiras e escudos", 0, 205, 30, TEXT, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Baixe as imagens quando quiser. Elas ficam salvas neste aparelho.", 0, 246, 17, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Sem download, o jogo mostra versões simples que ocupam menos espaço.", 0, 274, 15, Color("bac1d0"), W, HORIZONTAL_ALIGNMENT_CENTER)
+	var is_downloading := not active_asset_request.is_empty() or not asset_queue.is_empty()
+	_button(Rect2(384, 330, 512, 58), "BAIXAR / ATUALIZAR ESCUDOS E BANDEIRAS", not is_downloading)
+	_button(Rect2(384, 406, 512, 58), "REMOVER ESCUDOS BAIXADOS")
+	if is_downloading:
+		var completed := asset_download_success + asset_download_failures
+		_label("Baixando imagens: %d de %d  •  %d falhas" % [completed, asset_download_total, asset_download_failures], 0, 510, 16, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+	elif asset_download_total > 0:
+		_label("Download concluído: %d imagens salvas  •  %d falhas" % [asset_download_success, asset_download_failures], 0, 510, 16, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
+	else:
+		_label("Remover escudos preserva as bandeiras baixadas.", 0, 510, 16, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Os escudos são baixados para os clubes disponíveis no jogo.", 0, 546, 13, MUTED, W, HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_select() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("e8e9ec"), true)
@@ -1079,7 +1180,7 @@ func _draw_select() -> void:
 		if ResourceLoader.exists(flag_path): _draw_texture_fit(load(flag_path), flag_rect)
 		else:
 			var flag_code: String = str(LEAGUES[i]["flag"])
-			var flag_texture := _remote_asset_texture("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
+			var flag_texture := _cached_asset_texture("flags/4x3/%s" % flag_code)
 			if flag_texture != null: _draw_texture_fit(flag_texture, flag_rect)
 			else: _draw_flag(flag_code, flag_rect)
 		_label(str(LEAGUES[i]["country"]), 108, row_y + 26, 14, Color("f1f2f4"), 172)
@@ -1101,28 +1202,13 @@ func _draw_select() -> void:
 	_label("←/→ muda o país  •  A/D muda o clube", 34, 690, 12, MUTED)
 
 func _draw_crest(team: String, league: Dictionary, rect: Rect2) -> void:
-	var aliases := {
-		"Atlético-MG":"Atlético_Mineiro", "São Paulo":"São_Paulo", "Santos":"Santos_FC", "Grêmio":"Grêmio", "Internacional":"Internacional",
-		"Liverpool":"Liverpool_FC", "Manchester City":"Manchester_City", "Manchester United":"Manchester_United", "Newcastle":"Newcastle_United",
-		"Atlético de Madrid":"Atletico_Madrid", "Real Madrid":"Real_Madrid", "Real Sociedad":"Real_Sociedad", "Athletic Club":"Athletic_Club_Bilbao",
-		"Milan":"Milan", "Inter":"Inter", "Roma":"AS_Roma", "Porto":"FC_Porto", "Sporting CP":"Sporting_CP", "Vitória SC":"Vitória_de_Guimarães",
-		"Braga":"SC_Braga", "Famalicão":"Famalicao", "PSV":"PSV_Eindhoven", "Utrecht":"FC_Utrecht", "Heerenveen":"sc_Heerenveen", "AZ Alkmaar":"AZ_Alkmaar", "Sparta Rotterdam":"Sparta_Rotterdam",
-		"Boca Juniors":"Boca_Juniors", "River Plate":"River_Plate", "Racing Club":"Racing_Club", "Independiente":"Independiente", "Estudiantes":"Estudiantes_de_La_Plata", "Lanús":"Lanús", "San Lorenzo":"San_Lorenzo_de_Almagro",
-		"Inter Miami":"Inter_Miami_CF", "LA Galaxy":"Los_Angeles_Galaxy", "LAFC":"Los_Angeles_Football_Club", "Seattle Sounders":"Seattle_Sounders_FC",
-		"New York City":"New_York_City_Football_Club", "Portland Timbers":"Portland_Timbers", "Yokohama F. Marinos":"Yokohama_F._Marinos",
-		"Kashima Antlers":"Kashima_Antlers", "Urawa Reds":"Urawa_Reds", "Kawasaki Frontale":"Kawasaki_Frontale",
-		"Gamba Osaka":"Gamba_Osaka", "Cerezo Osaka":"Cerezo_Osaka", "Vissel Kobe":"Vissel_Kobe", "FC Tokyo":"FC_Tokyo",
-		"América":"Club_America", "Guadalajara":"CD_Guadalajara", "Cruz Azul":"Cruz_Azul", "Tigres":"Tigres_UANL", "Pumas":"UNAM_Pumas"
-	}
-	var file_name: String = aliases.get(team, team.replace(" ", "_"))
+	var file_name := _logo_file_name(team)
 	var path := "res://assets/football-logos-source/logos/%s/%s.svg" % [league["folder"], file_name]
 	if ResourceLoader.exists(path):
 		_draw_texture_fit(load(path), rect)
 	else:
 		var folder: String = str(league["folder"])
-		var remote_path := "logos/%s/%s" % [folder, file_name]
-		var logo_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s.svg" % [folder, file_name.uri_encode()]
-		var logo_texture := _remote_asset_texture(remote_path, logo_url)
+		var logo_texture := _cached_asset_texture("logos/%s/%s" % [folder, file_name])
 		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
 		else: _draw_fallback_crest(team, rect)
 
@@ -1200,9 +1286,12 @@ func _draw_league_badge(league: Dictionary, rect: Rect2) -> void:
 	else:
 		var folder: String = str(league["folder"])
 		var cache_key := "logos/%s/%s" % [folder, file_name.trim_suffix(".svg")]
-		var logo_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, file_name.uri_encode()]
-		var logo_texture := _remote_asset_texture(cache_key, logo_url)
+		var logo_texture := _cached_asset_texture(cache_key)
 		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
+		else:
+			draw_circle(rect.get_center(), minf(rect.size.x, rect.size.y) * 0.45, Color("35465e"))
+			var league_initial: String = str(league["country"]).substr(0, 1)
+			_label(league_initial, rect.position.x, rect.position.y + rect.size.y * 0.68, 20, WSC_GOLD, rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_texture_fit(texture: Texture2D, rect: Rect2) -> void:
 	var source_size := texture.get_size()
