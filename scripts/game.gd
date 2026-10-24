@@ -1022,7 +1022,7 @@ func _panel(rect: Rect2, color: Color = PANEL) -> void:
 	draw_rect(rect, LINE, false, 1.0)
 
 func _draw_brand_mark(rect: Rect2) -> void:
-	var logo_path := "res://assets/club-legacy-mark.svg"
+	var logo_path := "res://assets/club-legacy-logo.png"
 	if ResourceLoader.exists(logo_path):
 		_draw_texture_fit(load(logo_path), rect)
 
