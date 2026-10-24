@@ -1021,6 +1021,11 @@ func _panel(rect: Rect2, color: Color = PANEL) -> void:
 	draw_rect(rect, color, true)
 	draw_rect(rect, LINE, false, 1.0)
 
+func _draw_brand_mark(rect: Rect2) -> void:
+	var logo_path := "res://assets/club-legacy-mark.svg"
+	if ResourceLoader.exists(logo_path):
+		_draw_texture_fit(load(logo_path), rect)
+
 func _button(rect: Rect2, text: String, active: bool = false) -> void:
 	draw_rect(rect, WSC_GREEN if active else Color("303655"), true)
 	draw_rect(rect, Color("4fa26b") if active else Color("515a7a"), false, 1.0)
@@ -1206,9 +1211,7 @@ func _on_asset_download_completed(result: int, response_code: int, _headers: Pac
 
 func _topbar(title: String, sub: String = "") -> void:
 	draw_rect(Rect2(0, 0, W, 70), WSC_GREEN, true)
-	draw_circle(Vector2(48, 35), 25, Color("f2f2e7"))
-	draw_circle(Vector2(48, 35), 19, Color("226c46"))
-	_label("⚽", 31, 43, 20, TEXT)
+	_draw_brand_mark(Rect2(18, 8, 54, 54))
 	_label(title, 88, 34, 20, TEXT)
 	_label(sub, 88, 56, 12, Color("d4e6d7"))
 	_button(Rect2(1124, 13, 136, 44), "VOLTAR")
@@ -1287,9 +1290,7 @@ func _mini_player_card(index: int, rect: Rect2, reserve: bool = false) -> void:
 func _draw_home() -> void:
 	draw_rect(Rect2(0, 0, W, H), WSC_NAVY, true)
 	draw_rect(Rect2(0, 0, W, 70), WSC_GREEN, true)
-	draw_circle(Vector2(48, 35), 25, Color("f2f2e7"))
-	draw_circle(Vector2(48, 35), 19, Color("226c46"))
-	_label("⚽", 31, 43, 20, TEXT)
+	_draw_brand_mark(Rect2(18, 8, 54, 54))
 	_label("CLUB LEGACY", 88, 43, 20, TEXT)
 	draw_rect(Rect2(64, 112, 1152, 530), Color("202543"), true)
 	_label("CLUB LEGACY", 0, 220, 22, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1375,7 +1376,8 @@ func _draw_select() -> void:
 	draw_rect(Rect2(0, 0, W, H), Color("e8e9ec"), true)
 	draw_rect(Rect2(0, 0, W, 68), Color("5bc5ae"), true)
 	_label("‹", 22, 48, 38, TEXT)
-	_label("CLUB LEGACY", 90, 43, 22, Color("153d48"))
+	_draw_brand_mark(Rect2(64, 10, 48, 48))
+	_label("CLUB LEGACY", 120, 43, 22, Color("153d48"))
 	_button(Rect2(1120, 12, 132, 44), "ESCOLHER SLOT", true)
 	_label("Nova Carreira  /  Escolher Liga", 0, 100, 21, Color("263849"), W, HORIZONTAL_ALIGNMENT_CENTER)
 	var league: Dictionary = LEAGUES[league_index]
@@ -1399,7 +1401,7 @@ func _draw_select() -> void:
 		_label(str(LEAGUES[i]["name"]), 286, row_y + 26, 12, Color("c1c9d4"), 156)
 		_label("★★★", 480, row_y + 26, 14, WSC_GOLD)
 	draw_rect(Rect2(630, 126, 610, 495), Color("17233a"), true)
-	_label("CLUBES MAIS FORTES", 0, 166, 13, Color("c6ced9"), W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("CLUBES MAIS FORTES", 630, 166, 13, Color("c6ced9"), 610, HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_league_badge(league, Rect2(810, 180, 48, 48))
 	_label(str(league["country"]).to_upper() + "   •   " + str(league["name"]), 650, 245, 20, TEXT, 570, HORIZONTAL_ALIGNMENT_CENTER)
 	var teams: Array = league["teams"]
@@ -1408,8 +1410,8 @@ func _draw_select() -> void:
 	var selected_team: String = str(teams[club_index])
 	_draw_crest(selected_team, league, Rect2(850, 250, 150, 150))
 	_label(selected_team.to_upper(), 690, 445, 22, Color("f3f4f6"), 520, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("ATAQUE  ★★★       MEIO  ★★★★       DEFESA  ★★★", 0, 485, 14, WSC_GOLD, W, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("Elenco inicial  •  primeira temporada", 0, 520, 14, Color("b9c2cf"), W, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("ATAQUE  ★★★     MEIO  ★★★★     DEFESA  ★★★", 640, 485, 14, WSC_GOLD, 590, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Elenco inicial  •  primeira temporada", 640, 520, 14, Color("b9c2cf"), 590, HORIZONTAL_ALIGNMENT_CENTER)
 	_button(Rect2(855, 560, 336, 54), "COMEÇAR CARREIRA", true)
 	_label("←/→ muda o país  •  A/D muda o clube", 34, 690, 12, MUTED)
 
