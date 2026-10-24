@@ -27,9 +27,9 @@ O APK atual é uma versão de depuração para celulares Android com processador
 
 ## O que há no protótipo
 
-- Dez ligas de exemplo, cada uma com oito clubes.
+- 30 ligas masculinas em 14 países, com 663 vagas de clubes. O Brasileirão tem Séries A, B, C e D; divisões adultas disponíveis também aparecem nos demais países.
 - Carreira local com quatro slots de salvamento automático.
 - Elenco, formações, mercado, calendário, classificação e partidas jogáveis ou simuladas.
 - Downloads opcionais de bandeiras, escudos e logos de competições.
 
-O protótipo ainda usa nomes gerados para parte dos clubes e jogadores, e os atributos de jogo são estimativas do próprio protótipo. Consulte [LEIA-ME.md](LEIA-ME.md) e [ASSETS_E_REFERENCIAS.md](ASSETS_E_REFERENCIAS.md) para mais detalhes, fontes e créditos.
+Parte dos clubes ainda usa jogadores gerados, e os atributos de jogo são estimativas do protótipo. Consulte [LEIA-ME.md](LEIA-ME.md) e [ASSETS_E_REFERENCIAS.md](ASSETS_E_REFERENCIAS.md) para mais detalhes, fontes e créditos.

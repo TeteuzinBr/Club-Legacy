@@ -5,7 +5,7 @@ const H := 720.0
 const SAVE_SLOT_COUNT := 4
 const FIRST_NAMES := ["Caio", "Rafael", "Davi", "Luca", "Bruno", "Enzo", "Mateus", "Arthur", "Theo", "Nicolas", "João", "Gabriel", "Samuel", "Leonardo", "André", "Marcos", "Daniel", "Ícaro", "Vitor", "Felipe", "Renan", "Alex", "Tomás", "Diego", "Heitor", "Miguel", "Erick", "Murilo", "David", "Lucas"]
 const LAST_NAMES := ["Silva", "Costa", "Almeida", "Santos", "Ferreira", "Lima", "Pereira", "Rocha", "Mendes", "Barros", "Oliveira", "Carvalho", "Ramos", "Freitas", "Azevedo", "Martins", "Nunes", "Moraes", "Teixeira", "Dias", "Moreira", "Castro", "Lopes", "Vieira", "Cardoso", "Correia", "Farias", "Cunha", "Gomes", "Reis"]
-const LEAGUES := [
+const BASE_LEAGUES := [
 	{"country":"Brasil", "flag":"br", "folder":"brazil", "name":"Série A", "teams":["Flamengo", "Palmeiras", "Corinthians", "São Paulo", "Santos", "Grêmio", "Internacional", "Atlético-MG"]},
 	{"country":"Inglaterra", "flag":"gb-eng", "folder":"england", "name":"Premier League", "teams":["Arsenal", "Chelsea", "Liverpool", "Manchester City", "Manchester United", "Tottenham", "Newcastle", "Aston Villa"]},
 	{"country":"Espanha", "flag":"es", "folder":"spain", "name":"La Liga", "teams":["Barcelona", "Real Madrid", "Atlético de Madrid", "Sevilla", "Valencia", "Villarreal", "Real Sociedad", "Athletic Club"]},
@@ -17,6 +17,12 @@ const LEAGUES := [
 	{"country":"Japão", "flag":"jp", "folder":"japan", "name":"J3 League", "teams":["Roasso Kumamoto", "Nara Club", "Fukushima United FC", "Matsumoto Yamaga FC", "Kamatamare Sanuki", "Kochi United SC", "Gainare Tottori", "FC Osaka"]},
 	{"country":"México", "flag":"mx", "folder":"mexico", "name":"Liga MX", "teams":["América", "Guadalajara", "Cruz Azul", "Tigres", "Monterrey", "Pumas", "Toluca", "Pachuca"]},
 ]
+var LEAGUES: Array = []
+var league_display_order: Array[int] = []
+var country_display_order: Array[int] = []
+const LEAGUE_ROWS_PER_PAGE := 10
+var league_list_offset := 0
+var division_picker_open := false
 const REAL_SQUADS := {
 	"Flamengo": [
 		["Agustín Rossi", "GK", 1], ["Andrew", "GK", 42], ["Dyogo Alves", "GK", 49],
@@ -110,6 +116,7 @@ var market_candidates: Array[Dictionary] = []
 var transfer_offer: Dictionary = {}
 var asset_http: HTTPRequest
 var brand_mark_texture: Texture2D
+var football_logo_manifest: Dictionary = {}
 var asset_queue: Array[Dictionary] = []
 var active_asset_request: Dictionary = {}
 var asset_textures: Dictionary = {}
@@ -117,7 +124,6 @@ var asset_requests_started: Dictionary = {}
 var asset_download_total := 0
 var asset_download_success := 0
 var asset_download_failures := 0
-var asset_download_abort := false
 var asset_notice := ""
 var asset_notice_time := 0.0
 var asset_animation_time := 0.0
@@ -133,6 +139,8 @@ var save_slot_summaries: Array[Dictionary] = []
 
 func _ready() -> void:
 	rng.randomize()
+	football_logo_manifest = _load_football_logo_manifest()
+	LEAGUES = _load_league_catalog()
 	var brand_image := Image.new()
 	var brand_bytes := FileAccess.get_file_as_bytes("res://assets/club-legacy-logo.png")
 	if not brand_bytes.is_empty() and brand_image.load_png_from_buffer(brand_bytes) == OK:
@@ -144,6 +152,152 @@ func _ready() -> void:
 	_migrate_legacy_save()
 	_refresh_save_slot_summaries()
 	queue_redraw()
+
+func _load_football_logo_manifest() -> Dictionary:
+	var file := FileAccess.open("res://assets/football_logo_manifest.json", FileAccess.READ)
+	if file == null: return {}
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	return parsed if parsed is Dictionary else {}
+
+func _load_league_catalog() -> Array:
+	var leagues: Array = BASE_LEAGUES.duplicate(true)
+	for league in leagues:
+		league["team_logos"] = league["teams"].duplicate()
+		league["competition_logo_available"] = true
+	for catalog_path in ["res://assets/openfootball_major_catalog.json", "res://assets/openfootball_world_catalog.json"]:
+		var file := FileAccess.open(catalog_path, FileAccess.READ)
+		if file == null: continue
+		var parsed: Variant = JSON.parse_string(file.get_as_text())
+		if not parsed is Array: continue
+		for entry in parsed:
+			if not entry is Dictionary or not entry.get("teams", []) is Array: continue
+			var league: Dictionary = entry.duplicate(true)
+			league["team_logos"] = league.get("teams", []).duplicate()
+			league["competition_logo_available"] = not _league_badge_file(league).is_empty() or (str(league.get("country", "")) == "Alemanha" and str(league.get("name", "")) == "Bundesliga") or (str(league.get("country", "")) == "França" and str(league.get("name", "")) == "Ligue 1")
+			# Preserve original league indices so old saves still point to the same competition.
+			var legacy_index := int(league.get("legacy_index", -1))
+			if legacy_index >= 0 and legacy_index < leagues.size():
+				var base: Dictionary = leagues[legacy_index].duplicate(true)
+				base["teams"] = league["teams"]
+				base["team_logos"] = league["teams"].duplicate()
+				leagues[legacy_index] = base
+			elif str(league.get("source_code", "")) == "mx1":
+				var mexico: Dictionary = leagues[9].duplicate(true)
+				mexico["teams"] = league["teams"]
+				mexico["team_logos"] = league["teams"].duplicate()
+				leagues[9] = mexico
+			else:
+				leagues.append(league)
+	_build_league_display_order(leagues)
+	return leagues
+
+func _build_league_display_order(leagues: Array) -> void:
+	league_display_order.clear()
+	country_display_order.clear()
+	var countries := ["Brasil", "Inglaterra", "Espanha", "Itália", "Portugal", "Países Baixos", "Argentina", "Estados Unidos", "Japão", "México", "Alemanha", "França", "Arábia Saudita", "China"]
+	for country in countries:
+		var country_indices: Array[int] = []
+		for index in range(leagues.size()):
+			if str(leagues[index].get("country", "")) == country:
+				country_indices.append(index)
+		country_indices.sort_custom(func(a: int, b: int) -> bool:
+			var rank_a := _league_division_rank(str(leagues[a].get("name", "")))
+			var rank_b := _league_division_rank(str(leagues[b].get("name", "")))
+			return rank_a < rank_b if rank_a != rank_b else str(leagues[a].get("name", "")) < str(leagues[b].get("name", ""))
+		)
+		league_display_order.append_array(country_indices)
+		if not country_indices.is_empty(): country_display_order.append(country_indices[0])
+	for index in range(leagues.size()):
+		if not league_display_order.has(index):
+			league_display_order.append(index)
+			if not country_display_order.has(index): country_display_order.append(index)
+
+func _league_division_rank(name: String) -> int:
+	var ranks := {
+		"Série A": 1, "Série B": 2, "Série C": 3, "Série D": 4,
+		"Premier League": 1, "Championship": 2, "League One": 3, "League Two": 4,
+		"La Liga": 1, "Segunda División": 2,
+		"Bundesliga": 1, "2. Bundesliga": 2, "3. Liga": 3,
+		"Serie A": 1, "Serie B": 2, "Serie C - Grupo A": 3, "Serie C - Grupo B": 4, "Serie C - Grupo C": 5,
+		"Primeira Liga": 1, "Liga Portugal 2": 2,
+		"Eredivisie": 1, "Eerste Divisie": 2,
+		"Liga Profesional": 1, "MLS": 1, "J1 League": 1, "J3 League": 3,
+		"Liga MX": 1, "Liga de Expansión MX": 2,
+		"Ligue 1": 1, "Ligue 2": 2,
+		"Saudi Professional League": 1, "Super League": 1
+	}
+	return int(ranks.get(name, 10))
+
+func _division_picker_indices(country: String) -> Array[int]:
+	var result: Array[int] = []
+	for index in league_display_order:
+		if str(LEAGUES[index].get("country", "")) == country:
+			result.append(index)
+	return result
+
+func _keep_selected_league_visible() -> void:
+	var country := str(LEAGUES[league_index].get("country", ""))
+	var selected_position := -1
+	for row_index in range(country_display_order.size()):
+		if str(LEAGUES[country_display_order[row_index]].get("country", "")) == country:
+			selected_position = row_index
+			break
+	if selected_position < 0: return
+	if selected_position < league_list_offset:
+		league_list_offset = selected_position
+	elif selected_position >= league_list_offset + LEAGUE_ROWS_PER_PAGE:
+		league_list_offset = selected_position - LEAGUE_ROWS_PER_PAGE + 1
+	league_list_offset = clampi(league_list_offset, 0, _last_league_page_offset())
+
+func _cycle_league_selection(direction: int) -> void:
+	if country_display_order.is_empty(): return
+	var country := str(LEAGUES[league_index].get("country", ""))
+	var position := 0
+	for row_index in range(country_display_order.size()):
+		if str(LEAGUES[country_display_order[row_index]].get("country", "")) == country:
+			position = row_index
+			break
+	position = posmod(position + direction, country_display_order.size())
+	league_index = country_display_order[position]
+	club_index = 0
+	_keep_selected_league_visible()
+
+func _last_league_page_offset() -> int:
+	return maxi(0, int(floor(float(maxi(0, country_display_order.size() - 1)) / LEAGUE_ROWS_PER_PAGE)) * LEAGUE_ROWS_PER_PAGE)
+
+func _country_league_name(country: String) -> String:
+	var names := {
+		"Brasil":"Brasileirão", "Inglaterra":"Premier League", "Espanha":"La Liga", "Itália":"Serie A",
+		"Portugal":"Primeira Liga", "Países Baixos":"Eredivisie", "Argentina":"Liga Profesional",
+		"Estados Unidos":"MLS", "Japão":"J.League", "México":"Liga MX", "Alemanha":"Bundesliga",
+		"França":"Ligue 1", "Arábia Saudita":"Saudi Pro League", "China":"Super League"
+	}
+	return str(names.get(country, "Liga nacional"))
+
+func _country_competitions(country: String) -> Array[String]:
+	var competitions := {
+		"Brasil":["Copa do Brasil", "Libertadores", "Sul-Americana", "Supercopa Rei", "Recopa Sul-Americana", "Mundial de Clubes"],
+		"Inglaterra":["FA Cup", "EFL Cup", "Champions League", "Europa League", "Conference League", "Community Shield", "Mundial de Clubes"],
+		"Espanha":["Copa do Rei", "Supercopa da Espanha", "Champions League", "Europa League", "Conference League", "Mundial de Clubes"],
+		"Itália":["Coppa Italia", "Supercoppa Italiana", "Champions League", "Europa League", "Conference League", "Mundial de Clubes"],
+		"Portugal":["Taça de Portugal", "Taça da Liga", "Supertaça", "Champions League", "Europa League", "Conference League"],
+		"Países Baixos":["KNVB Beker", "Johan Cruyff Shield", "Champions League", "Europa League", "Conference League"],
+		"Argentina":["Copa Argentina", "Supercopa Argentina", "Libertadores", "Sul-Americana", "Recopa Sul-Americana", "Mundial de Clubes"],
+		"Estados Unidos":["MLS Cup", "U.S. Open Cup", "Leagues Cup", "Copa dos Campeões da Concacaf", "Mundial de Clubes"],
+		"Japão":["Copa do Imperador", "Copa da J.League", "Supercopa do Japão", "Champions da Ásia", "Mundial de Clubes"],
+		"México":["Campeón de Campeones", "Leagues Cup", "Copa dos Campeões da Concacaf", "Mundial de Clubes"],
+		"Alemanha":["DFB-Pokal", "Supercopa da Alemanha", "Champions League", "Europa League", "Conference League", "Mundial de Clubes"],
+		"França":["Coupe de France", "Trophée des Champions", "Champions League", "Europa League", "Conference League", "Mundial de Clubes"],
+		"Arábia Saudita":["Copa do Rei", "Supercopa Saudita", "Champions da Ásia", "Mundial de Clubes"],
+		"China":["Copa da China", "Supercopa da China", "Champions da Ásia", "Mundial de Clubes"]
+	}
+	var result: Array[String] = []
+	for competition in competitions.get(country, ["Liga nacional"]):
+		result.append(str(competition))
+	return result
+
+func _competition_short_name(competition: String) -> String:
+	return competition if competition.length() <= 23 else competition.substr(0, 21) + "…"
 
 func _process(delta: float) -> void:
 	if screen == "match" and not match_over:
@@ -168,8 +322,16 @@ func _input(event: InputEvent) -> void:
 		elif screen == "career" and event.keycode == KEY_ENTER:
 			match_setup_open = true
 		elif screen == "select":
-			if event.keycode == KEY_LEFT: league_index = posmod(league_index - 1, LEAGUES.size()); club_index = 0
-			elif event.keycode == KEY_RIGHT: league_index = posmod(league_index + 1, LEAGUES.size()); club_index = 0
+			if event.keycode == KEY_LEFT: _cycle_league_selection(-1)
+			elif event.keycode == KEY_RIGHT: _cycle_league_selection(1)
+			elif event.keycode == KEY_PAGEUP:
+				league_list_offset = maxi(0, league_list_offset - LEAGUE_ROWS_PER_PAGE)
+				league_index = country_display_order[league_list_offset]
+				club_index = 0
+			elif event.keycode == KEY_PAGEDOWN:
+				league_list_offset = mini(_last_league_page_offset(), league_list_offset + LEAGUE_ROWS_PER_PAGE)
+				league_index = country_display_order[league_list_offset]
+				club_index = 0
 			elif event.keycode == KEY_A: club_index = posmod(club_index - 1, LEAGUES[league_index]["teams"].size())
 			elif event.keycode == KEY_D: club_index = posmod(club_index + 1, LEAGUES[league_index]["teams"].size())
 			elif event.keycode == KEY_ENTER: _begin_new_career()
@@ -247,14 +409,37 @@ func _handle_click(pos: Vector2) -> void:
 			if Rect2(1124, 13, 136, 44).has_point(pos): screen = "home"
 			else: _handle_save_slot_click(pos)
 		"select":
-			if Rect2(1120, 12, 132, 44).has_point(pos): _begin_new_career()
+			if division_picker_open:
+				var country_divisions := _division_picker_indices(str(LEAGUES[league_index].get("country", "")))
+				var picker_rect := Rect2(798, 233, 330, country_divisions.size() * 36.0)
+				if picker_rect.has_point(pos):
+					var picked_row := clampi(int((pos.y - picker_rect.position.y) / 36.0), 0, country_divisions.size() - 1)
+					league_index = country_divisions[picked_row]
+					club_index = 0
+					division_picker_open = false
+					_keep_selected_league_visible()
+					return
+				if Rect2(798, 190, 330, 38).has_point(pos):
+					division_picker_open = false
+					return
+				division_picker_open = false
+			if Rect2(798, 190, 330, 38).has_point(pos): division_picker_open = true
+			elif Rect2(1120, 12, 132, 44).has_point(pos): _begin_new_career()
 			elif Rect2(0, 0, 70, 68).has_point(pos): preferred_save_slot = 0; screen = "home"
-			elif Rect2(40, 173, 570, 424).has_point(pos):
-				var row := clampi(int((pos.y - 180) / 40), 0, LEAGUES.size() - 1)
-				league_index = row
+			elif Rect2(52, 181, 546, 400).has_point(pos):
+				var visible_row := clampi(int((pos.y - 181) / 40), 0, LEAGUE_ROWS_PER_PAGE - 1)
+				league_index = country_display_order[mini(league_list_offset + visible_row, country_display_order.size() - 1)]
 				club_index = 0
-			elif Rect2(645, 365, 48, 48).has_point(pos): club_index = posmod(club_index - 1, LEAGUES[league_index]["teams"].size())
-			elif Rect2(1175, 365, 48, 48).has_point(pos): club_index = posmod(club_index + 1, LEAGUES[league_index]["teams"].size())
+			elif Rect2(448, 592, 52, 26).has_point(pos):
+				league_list_offset = maxi(0, league_list_offset - LEAGUE_ROWS_PER_PAGE)
+				league_index = country_display_order[league_list_offset]
+				club_index = 0
+			elif Rect2(542, 592, 52, 26).has_point(pos):
+				league_list_offset = mini(_last_league_page_offset(), league_list_offset + LEAGUE_ROWS_PER_PAGE)
+				league_index = country_display_order[league_list_offset]
+				club_index = 0
+			elif Rect2(645, 285, 48, 48).has_point(pos): club_index = posmod(club_index - 1, LEAGUES[league_index]["teams"].size())
+			elif Rect2(1175, 285, 48, 48).has_point(pos): club_index = posmod(club_index + 1, LEAGUES[league_index]["teams"].size())
 			elif Rect2(855, 560, 336, 54).has_point(pos): _begin_new_career()
 			elif Rect2(1130, 18, 118, 42).has_point(pos): preferred_save_slot = 0; screen = "home"
 		"squad":
@@ -445,9 +630,12 @@ func _load_save(slot: int) -> void:
 	if club_name == "": return
 	league_index = clampi(int(cfg.get_value("career", "league", 0)), 0, LEAGUES.size() - 1)
 	club_index = int(cfg.get_value("career", "club_index", 0))
-	if not LEAGUES[league_index]["teams"].has(club_name):
-		club_index = 0
-		club_name = str(LEAGUES[league_index]["teams"][0])
+	var saved_league_teams: Array = LEAGUES[league_index]["teams"]
+	if not saved_league_teams.has(club_name):
+		# Preserve a club name stored by an older save even if it left the refreshed season list.
+		saved_league_teams.append(club_name)
+		LEAGUES[league_index]["teams"] = saved_league_teams
+	club_index = saved_league_teams.find(club_name)
 	season = int(cfg.get_value("career", "season", 1))
 	round_number = int(cfg.get_value("career", "round", 1))
 	formation_index = int(cfg.get_value("career", "formation", 0))
@@ -1058,24 +1246,25 @@ func _download_all_assets() -> void:
 	asset_requests_started.clear()
 	asset_download_success = 0
 	asset_download_failures = 0
-	asset_download_abort = false
 	asset_notice = ""
 	asset_notice_time = 0.0
 	asset_failure_hint = ""
 	asset_queue.clear()
 	for league in LEAGUES:
-		var folder: String = str(league["folder"])
 		var flag_code: String = str(league["flag"])
 		_queue_asset_download("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
 		var competition_asset := _league_badge_download(league)
 		if not competition_asset.is_empty():
-			var competition_key := "logos/%s/%s" % [folder, str(competition_asset["name"])]
-			_queue_asset_download(competition_key, str(competition_asset["url"]))
-		for team in league["teams"]:
-			var file_name := _logo_file_name(str(team))
-			var key := "logos/%s/%s" % [folder, file_name]
-			var url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s.svg" % [folder, file_name.uri_encode()]
-			_queue_asset_download(key, url)
+			_queue_asset_download(str(competition_asset["key"]), str(competition_asset["url"]))
+		for team in league.get("team_logos", []):
+			var file_name := _logo_file_name(str(team), league)
+			if file_name.is_empty(): continue
+			var club_asset := _logo_asset(_asset_folder(league).path_join(file_name))
+			_queue_asset_download(str(club_asset["key"]), str(club_asset["url"]))
+	var cup_paths: Dictionary = football_logo_manifest.get("cups", {})
+	for relative_path in cup_paths.values():
+		var cup_asset := _logo_asset(str(relative_path))
+		_queue_asset_download(str(cup_asset["key"]), str(cup_asset["url"]))
 	asset_download_total = asset_queue.size() + (1 if not active_asset_request.is_empty() else 0)
 	if asset_download_total == 0: asset_download_total = asset_download_success + asset_download_failures
 	if active_asset_request.is_empty() and asset_queue.is_empty(): _set_asset_completion_notice()
@@ -1141,52 +1330,52 @@ func _remove_cached_directory(path: String) -> void:
 	directory.list_dir_end()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
-func _logo_file_name(team: String) -> String:
-	var aliases := {
-		"Atlético-MG":"Atlético_Mineiro", "São Paulo":"São_Paulo", "Santos":"Santos_FC", "Grêmio":"Grêmio", "Internacional":"Internacional",
-		"Liverpool":"Liverpool_FC", "Manchester City":"Manchester_City", "Manchester United":"Manchester_United", "Newcastle":"Newcastle_United",
-		"Atlético de Madrid":"Atletico_Madrid", "Real Madrid":"Real_Madrid", "Real Sociedad":"Real_Sociedad", "Athletic Club":"Athletic_Club_Bilbao",
-		"Milan":"Milan", "Inter":"Inter", "Roma":"AS_Roma", "Porto":"FC_Porto", "Sporting CP":"Sporting_CP", "Vitória SC":"Vitória_de_Guimarães",
-		"Braga":"SC_Braga", "Famalicão":"Famalicao", "PSV":"PSV_Eindhoven", "Utrecht":"FC_Utrecht", "Heerenveen":"sc_Heerenveen", "AZ Alkmaar":"AZ_Alkmaar", "Sparta Rotterdam":"Sparta_Rotterdam",
-		"Boca Juniors":"Boca_Juniors", "River Plate":"River_Plate", "Racing Club":"Racing_Club", "Independiente":"Independiente", "Estudiantes":"Estudiantes_de_La_Plata", "Lanús":"Lanús", "San Lorenzo":"San_Lorenzo_de_Almagro",
-		"Inter Miami":"Inter_Miami_CF", "LA Galaxy":"Los_Angeles_Galaxy", "LAFC":"Los_Angeles_Football_Club", "Seattle Sounders":"Seattle_Sounders_FC",
-		"New York City":"New_York_City_Football_Club", "Portland Timbers":"Portland_Timbers", "Yokohama F. Marinos":"Yokohama_F._Marinos",
-		"Kashima Antlers":"Kashima_Antlers", "Urawa Reds":"Urawa_Reds", "Kawasaki Frontale":"Kawasaki_Frontale",
-		"Gamba Osaka":"Gamba_Osaka", "Cerezo Osaka":"Cerezo_Osaka", "Vissel Kobe":"Vissel_Kobe", "FC Tokyo":"FC_Tokyo",
-		"América":"Club_America", "Guadalajara":"CD_Guadalajara", "Cruz Azul":"Cruz_Azul", "Tigres":"Tigres_UANL", "Pumas":"UNAM_Pumas"
-	}
-	return str(aliases.get(team, team.replace(" ", "_")))
+func _logo_file_name(team: String, league: Dictionary = {}) -> String:
+	var clubs: Dictionary = football_logo_manifest.get("clubs", {}).get(str(league.get("country", "")), {})
+	return str(clubs.get(team, ""))
 
 func _league_badge_file(league: Dictionary) -> String:
-	var badge_files := {
-		"Brasil":"Brazilian_Serie_A.svg", "Espanha":"La_Liga.svg", "Portugal":"Primeira_Liga.svg",
-		"Países Baixos":"Eredivisie.svg", "Argentina":"Argentina_Primera_Division.svg", "México":"Liga_MX.svg"
-	}
-	return str(badge_files.get(str(league["country"]), ""))
+	var key := "%s|%s" % [str(league.get("country", "")), str(league.get("name", ""))]
+	var relative_path := str(football_logo_manifest.get("leagues", {}).get(key, ""))
+	return relative_path.get_file() if relative_path != "" else ""
 
 func _league_badge_download(league: Dictionary) -> Dictionary:
-	var folder: String = str(league["folder"])
-	var local_file := _league_badge_file(league)
-	if local_file != "":
-		return {
-			"name":local_file.trim_suffix(".svg"),
-			"url":"https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, local_file.uri_encode()],
-			"extension":"svg"
-		}
-	var commons_assets: Dictionary = {
-		"Inglaterra":{"name":"Pl-logo-light", "url":"https://upload.wikimedia.org/wikipedia/commons/b/bf/Pl-logo-light.svg"},
-		"Itália":{"name":"Serie_A_logo_2022", "url":"https://upload.wikimedia.org/wikipedia/commons/e/e9/Serie_A_logo_2022.svg"},
-		"Estados Unidos":{"name":"MLS_Official_Logo", "url":"https://upload.wikimedia.org/wikipedia/commons/e/e3/MLS_Official_Logo.svg"},
-		"Japão":{"name":"J3_league_logo_2026", "url":"https://upload.wikimedia.org/wikipedia/commons/1/18/J3_league_logo_2026.svg"}
+	var key := "%s|%s" % [str(league.get("country", "")), str(league.get("name", ""))]
+	var relative_path := str(football_logo_manifest.get("leagues", {}).get(key, ""))
+	return _logo_asset(relative_path) if relative_path != "" else {}
+
+func _cup_logo_asset(cup_name: String) -> Dictionary:
+	var relative_path := str(football_logo_manifest.get("cups", {}).get(cup_name, ""))
+	return _logo_asset(relative_path) if relative_path != "" else {}
+
+func _logo_asset(relative_path: String) -> Dictionary:
+	if relative_path == "": return {}
+	var encoded_parts: PackedStringArray = []
+	for part in relative_path.split("/", false):
+		encoded_parts.append(str(part).uri_encode())
+	var key := "logos/%s" % relative_path.trim_suffix(".svg")
+	return {
+		"key":key,
+		"path":"logos/%s" % relative_path,
+		"name":relative_path.get_file().trim_suffix(".svg"),
+		"url":"https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s" % "/".join(encoded_parts),
+		"extension":"svg"
 	}
-	var commons_asset: Dictionary = commons_assets.get(str(league["country"]), {})
-	if commons_asset.is_empty(): return {}
-	commons_asset["extension"] = "svg"
-	return commons_asset
+
+func _asset_folder(league: Dictionary) -> String:
+	var explicit_folder := str(league.get("asset_folder", ""))
+	if explicit_folder != "": return explicit_folder
+	var country_folders := {
+		"Brasil":"brazil", "Inglaterra":"england", "Espanha":"spain", "Itália":"italy", "Portugal":"portugal",
+		"Países Baixos":"netherlands", "Argentina":"argentina", "Estados Unidos":"usa", "Japão":"japan", "México":"mexico",
+		"Alemanha":"germany", "França":"france", "Arábia Saudita":"saudi-arabia", "China":"china"
+	}
+	return str(country_folders.get(str(league.get("country", "")), league.get("folder", "")))
 
 func _queue_asset_download(cache_key: String, url: String) -> void:
-	if asset_download_abort: return
 	if asset_requests_started.has(cache_key): return
+	for extension in ["svg", "png"]:
+		if FileAccess.file_exists("user://asset-cache/%s.%s" % [cache_key, extension]): return
 	asset_requests_started[cache_key] = true
 	var extension := "png" if url.get_extension().to_lower() == "png" else "svg"
 	if not active_asset_request.is_empty() or not asset_queue.is_empty():
@@ -1196,17 +1385,22 @@ func _queue_asset_download(cache_key: String, url: String) -> void:
 	_start_next_asset_download()
 
 func _start_next_asset_download() -> void:
-	if asset_download_abort or not active_asset_request.is_empty() or asset_queue.is_empty(): return
+	if not active_asset_request.is_empty() or asset_queue.is_empty(): return
 	active_asset_request = asset_queue.pop_front()
 	var error: Error = asset_http.request(str(active_asset_request["url"]))
 	if error != OK:
+		if _retry_active_asset_download(): return
 		asset_download_failures += 1
 		asset_failure_hint = "Falha ao iniciar download: %s" % error_string(error)
-		asset_download_abort = true
-		asset_queue.clear()
-		asset_download_total = asset_download_success + asset_download_failures
 		active_asset_request = {}
 		_start_next_asset_download()
+
+func _retry_active_asset_download() -> bool:
+	if active_asset_request.is_empty(): return false
+	var attempts := int(active_asset_request.get("attempts", 0))
+	if attempts >= 2: return false
+	active_asset_request["attempts"] = attempts + 1
+	return asset_http.request(str(active_asset_request.get("url", ""))) == OK
 
 func _on_asset_download_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)):
@@ -1231,12 +1425,10 @@ func _on_asset_download_completed(result: int, response_code: int, _headers: Pac
 				asset_download_failures += 1
 				asset_failure_hint = "A fonte enviou um arquivo de imagem inválido."
 		else:
+			var can_retry := _asset_connection_failed(result) or response_code >= 500
+			if can_retry and _retry_active_asset_download(): return
 			asset_download_failures += 1
 			asset_failure_hint = _asset_request_error(result, response_code)
-			if _asset_connection_failed(result):
-				asset_download_abort = true
-				asset_queue.clear()
-				asset_download_total = asset_download_success + asset_download_failures
 	active_asset_request = {}
 	queue_redraw()
 	_start_next_asset_download()
@@ -1419,9 +1611,13 @@ func _draw_select() -> void:
 	_label("PAÍS", 70, 167, 13, Color("d5dbe4"))
 	_label("LIGA", 305, 167, 13, Color("d5dbe4"))
 	_label("TOP 7 TIMES", 484, 167, 13, Color("d5dbe4"))
-	for i in range(LEAGUES.size()):
-		var row_y: float = 181 + i * 40
-		if i == league_index: draw_rect(Rect2(52, row_y, 546, 39), Color("3c5367"), true)
+	for visible_row in range(LEAGUE_ROWS_PER_PAGE):
+		var display_index := league_list_offset + visible_row
+		if display_index >= country_display_order.size(): break
+		var i := country_display_order[display_index]
+		var row_y: float = 181 + visible_row * 40
+		var selected_country := str(LEAGUES[league_index].get("country", "")) == str(LEAGUES[i].get("country", ""))
+		if selected_country: draw_rect(Rect2(52, row_y, 546, 39), Color("3c5367"), true)
 		var flag_path := "res://assets/flag-icons/flags/4x3/%s.svg" % LEAGUES[i]["flag"]
 		var flag_rect := Rect2(68, row_y + 8, 28, 20)
 		if ResourceLoader.exists(flag_path): _draw_texture_fit(load(flag_path), flag_rect)
@@ -1431,37 +1627,70 @@ func _draw_select() -> void:
 			if flag_texture != null: _draw_texture_fit(flag_texture, flag_rect)
 			else: _draw_flag(flag_code, flag_rect)
 		_label(str(LEAGUES[i]["country"]), 108, row_y + 26, 14, Color("f1f2f4"), 172)
-		_label(str(LEAGUES[i]["name"]), 286, row_y + 26, 12, Color("c1c9d4"), 156)
+		_label(_country_league_name(str(LEAGUES[i]["country"])), 286, row_y + 26, 12, Color("c1c9d4"), 156)
 		_label("★★★", 480, row_y + 26, 14, WSC_GOLD)
+	var page_count := ceili(float(country_display_order.size()) / LEAGUE_ROWS_PER_PAGE)
+	var current_page := int(league_list_offset / LEAGUE_ROWS_PER_PAGE) + 1
+	_button(Rect2(448, 592, 52, 24), "◀")
+	_label("%d / %d" % [current_page, page_count], 500, 610, 12, Color("c1c9d4"), 42, HORIZONTAL_ALIGNMENT_CENTER)
+	_button(Rect2(542, 592, 52, 24), "▶")
 	draw_rect(Rect2(630, 126, 610, 495), Color("17233a"), true)
 	_label("CLUBES MAIS FORTES", 630, 166, 13, Color("c6ced9"), 610, HORIZONTAL_ALIGNMENT_CENTER)
 	var competition_title := str(league["country"]).to_upper() + "  •  " + str(league["name"])
-	var title_width := ThemeDB.fallback_font.get_string_size(competition_title, HORIZONTAL_ALIGNMENT_LEFT, -1, 20).x
-	var badge_width := 38.0
-	var title_gap := 12.0
-	var title_group_width := badge_width + title_gap + title_width
-	var title_group_x := 935.0 - title_group_width * 0.5
-	_draw_league_badge(league, Rect2(title_group_x, 197, badge_width, badge_width))
-	_label(competition_title, title_group_x + badge_width + title_gap, 223, 20, TEXT)
+	_draw_league_badge(league, Rect2(758, 190, 38, 38))
+	_button(Rect2(798, 190, 330, 38), competition_title + "  ▾")
 	var teams: Array = league["teams"]
-	_button(Rect2(645, 365, 48, 48), "◀")
-	_button(Rect2(1175, 365, 48, 48), "▶")
+	_button(Rect2(645, 285, 48, 48), "◀")
+	_button(Rect2(1175, 285, 48, 48), "▶")
 	var selected_team: String = str(teams[club_index])
-	_draw_crest(selected_team, league, Rect2(850, 250, 150, 150))
-	_label(selected_team.to_upper(), 690, 445, 22, Color("f3f4f6"), 520, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("ATAQUE  ★★★     MEIO  ★★★★     DEFESA  ★★★", 640, 485, 14, WSC_GOLD, 590, HORIZONTAL_ALIGNMENT_CENTER)
-	_label("Elenco inicial  •  primeira temporada", 640, 520, 14, Color("b9c2cf"), 590, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_crest(selected_team, league, Rect2(865, 244, 120, 120))
+	_label(selected_team.to_upper(), 690, 402, 22, Color("f3f4f6"), 520, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("COPAS E TORNEIOS POSSÍVEIS", 640, 436, 13, Color("c6ced9"), 590, HORIZONTAL_ALIGNMENT_CENTER)
+	var competitions := _country_competitions(str(league.get("country", "")))
+	for competition_index in range(competitions.size()):
+		var column := competition_index % 3
+		var row := int(competition_index / 3)
+		var chip_rect := Rect2(650 + column * 194, 445 + row * 32, 184, 28)
+		draw_rect(chip_rect, Color("263650"), true)
+		draw_rect(chip_rect, Color("40546c"), false, 1.0)
+		var cup_asset := _cup_logo_asset(competitions[competition_index])
+		var label_x := chip_rect.position.x + 7
+		var label_width := chip_rect.size.x - 14
+		if not cup_asset.is_empty():
+			var cup_texture := _cached_asset_texture(str(cup_asset["key"]))
+			if cup_texture != null:
+				_draw_texture_fit(cup_texture, Rect2(chip_rect.position.x + 5, chip_rect.position.y + 3, 22, 22))
+				label_x += 22
+				label_width -= 22
+		_label(_competition_short_name(competitions[competition_index]), label_x, chip_rect.position.y + 19, 11, TEXT, label_width, HORIZONTAL_ALIGNMENT_CENTER)
+	_label("Vagas continentais dependem da classificação.", 650, 548, 11, Color("9eacbd"), 580, HORIZONTAL_ALIGNMENT_CENTER)
 	_button(Rect2(855, 560, 336, 54), "COMEÇAR CARREIRA", true)
 	_label("←/→ muda o país  •  A/D muda o clube", 34, 690, 12, MUTED)
+	if division_picker_open:
+		var divisions := _division_picker_indices(str(league.get("country", "")))
+		var menu_rect := Rect2(798, 233, 330, divisions.size() * 36.0)
+		draw_rect(menu_rect, Color("263650"), true)
+		draw_rect(menu_rect, Color("536b83"), false, 1.0)
+		for row in range(divisions.size()):
+			var division_index: int = divisions[row]
+			var row_rect := Rect2(menu_rect.position.x + 1, menu_rect.position.y + row * 36.0, menu_rect.size.x - 2, 35)
+			if division_index == league_index: draw_rect(row_rect, Color("3c5367"), true)
+			_label(str(LEAGUES[division_index].get("name", "")), row_rect.position.x + 14, row_rect.position.y + 24, 15, TEXT, row_rect.size.x - 28)
 
 func _draw_crest(team: String, league: Dictionary, rect: Rect2) -> void:
-	var file_name := _logo_file_name(team)
-	var path := "res://assets/football-logos-source/logos/%s/%s.svg" % [league["folder"], file_name]
+	if not league.get("team_logos", []).has(team):
+		_draw_fallback_crest(team, rect)
+		return
+	var file_name := _logo_file_name(team, league)
+	if file_name.is_empty():
+		_draw_fallback_crest(team, rect)
+		return
+	var asset := _logo_asset(_asset_folder(league).path_join(file_name))
+	var path := "res://assets/football-logos-source/%s" % str(asset["path"])
 	if ResourceLoader.exists(path):
 		_draw_texture_fit(load(path), rect)
 	else:
-		var folder: String = str(league["folder"])
-		var logo_texture := _cached_asset_texture("logos/%s/%s" % [folder, file_name])
+		var logo_texture := _cached_asset_texture(str(asset["key"]))
 		if logo_texture != null: _draw_texture_fit(logo_texture, rect)
 		else: _draw_fallback_crest(team, rect)
 
@@ -1527,12 +1756,10 @@ func _draw_team_badge(team: String, rect: Rect2) -> void:
 			return
 
 func _draw_league_badge(league: Dictionary, rect: Rect2) -> void:
-	var folder: String = str(league["folder"])
 	var badge_asset := _league_badge_download(league)
 	if not badge_asset.is_empty():
-		var cache_key := "logos/%s/%s" % [folder, str(badge_asset["name"])]
-		var extension: String = str(badge_asset["extension"])
-		var local_path := "res://assets/football-logos-source/logos/%s/%s.%s" % [folder, str(badge_asset["name"]), extension]
+		var cache_key := str(badge_asset["key"])
+		var local_path := "res://assets/football-logos-source/%s" % str(badge_asset["path"])
 		if ResourceLoader.exists(local_path):
 			_draw_texture_fit(load(local_path), rect)
 			return
