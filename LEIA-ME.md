@@ -1,0 +1,22 @@
+# Club Legacy
+
+Protótipo em Godot com carreira local, tela de elenco, atributos, formações, mercado, calendário e classificação. O mercado permite contratar jogadores dentro da verba, negociar ofertas por atletas do elenco e desenvolver jogadores jovens entre temporadas. A partida pode ser jogada ou simulada e usa controles por gestos inspirados nos lances-chave de World Soccer Champs. A interface e os desenhos são feitos no próprio Godot, sem imagens ou código do jogo de referência.
+
+## Abrir
+
+1. Clone o projeto com `git clone --recurse-submodules https://github.com/TeteuzinBr/Club-Legacy.git`.
+2. Instale Godot 4.x.
+3. Importe `project.godot` no Godot.
+4. Pressione **F5**.
+
+## Controles
+
+- Na seleção: setas trocam de liga; A/D trocam de clube; Enter inicia a carreira.
+- Na tela de elenco: setas trocam a formação; clique em dois jogadores para trocar suas posições.
+- Na partida: toque/clique num companheiro para passar; toque/clique num espaço vazio para correr; deslize/arraste para chutar ou tentar o desarme. No teclado: WASD/setas movem, Espaço chuta, J passa, Q tenta desarmar e Tab troca o jogador.
+- Na partida, **Simular** encerra com um placar automático.
+
+O protótipo inclui dez ligas de exemplo com oito clubes cada. A seleção de país mostra bandeiras e estrelas; escudos aparecem nas telas de seleção, calendário, classificação e partida. Ao avançar para a próxima partida, escolha **Jogar** ou **Simular**. Flamengo, Palmeiras, Barcelona e Roasso Kumamoto têm nomes, posições e camisas transcritos de elencos oficiais; os outros times ainda usam nomes gerados. Atributos seguem simulados. Ao fim da temporada, a colocação na liga afeta a verba, jogadores jovens podem evoluir e um atleta da base pode subir ao elenco. A carreira é salva localmente em `user://career.cfg`.
+
+Consulte `APK_ANALISE.md` para ver o que foi identificado no XAPK e os limites da análise.
+Consulte `ASSETS_E_REFERENCIAS.md` para fontes, créditos e licenças das imagens.

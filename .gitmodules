@@ -1,0 +1,9 @@
+[submodule "assets/flag-icons"]
+	path = assets/flag-icons
+	url = https://github.com/lipis/flag-icons.git
+[submodule "assets/football-logos-source"]
+	path = assets/football-logos-source
+	url = https://github.com/JoseArroyave/football-logos.git
+[submodule "assets/league-data-source"]
+	path = assets/league-data-source
+	url = https://github.com/openfootball/leagues.git
