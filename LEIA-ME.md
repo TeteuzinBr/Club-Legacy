@@ -18,7 +18,7 @@ Protótipo em Godot com carreira local, tela de elenco, atributos, formações, 
 
 O protótipo inclui dez ligas de exemplo com oito clubes cada. A seleção de país mostra bandeiras e estrelas; escudos aparecem nas telas de seleção, calendário, classificação e partida. Ao avançar para a próxima partida, escolha **Jogar** ou **Simular**. Flamengo, Palmeiras, Barcelona e Roasso Kumamoto têm nomes, posições e camisas transcritos de elencos oficiais; os outros times ainda usam nomes gerados. Atributos seguem simulados. Ao fim da temporada, a colocação na liga afeta a verba, jogadores jovens podem evoluir e um atleta da base pode subir ao elenco. A carreira é salva automaticamente em um dos quatro slots.
 
-O menu **Imagens e armazenamento** permite baixar/atualizar bandeiras, escudos e logos de competições, ou remover os escudos baixados. Para o download funcionar em APK Android, habilite **Project > Export > Android > Permissions > INTERNET** e gere o APK novamente. As carreiras são salvas automaticamente em quatro slots; saves antigos em `user://career.cfg` são migrados para o slot 1.
+O menu **Imagens e armazenamento** permite baixar/atualizar bandeiras, escudos e logos de competições, ou remover os escudos baixados. O perfil Android em `export_presets.cfg` já inclui a permissão de internet usada pelos downloads. As carreiras são salvas automaticamente em quatro slots; saves antigos em `user://career.cfg` são migrados para o slot 1.
 
 Consulte `APK_ANALISE.md` para ver o que foi identificado no XAPK e os limites da análise.
 Consulte `ASSETS_E_REFERENCIAS.md` para fontes, créditos e licenças das imagens.

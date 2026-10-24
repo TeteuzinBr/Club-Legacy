@@ -9,6 +9,7 @@
 
 - `assets/flag-icons/`: bandeiras SVG do projeto [lipis/flag-icons](https://github.com/lipis/flag-icons), sob licença MIT. O arquivo de licença está junto dos arquivos.
 - `assets/football-logos-source/logos/`: escudos de clubes do projeto [JoseArroyave/football-logos](https://github.com/JoseArroyave/football-logos), cujo repositório declara licença MIT. Os créditos e termos estão na pasta do projeto.
+- Logos das competições inglesa, italiana, norte-americana e japonesa são baixadas sob demanda do Wikimedia Commons: [Premier League](https://commons.wikimedia.org/wiki/File:Pl-logo-light.svg), [Serie A](https://commons.wikimedia.org/wiki/File:Serie_A_logo_2022.svg), [MLS](https://commons.wikimedia.org/wiki/File:MLS_Official_Logo.svg) e [J3 League](https://commons.wikimedia.org/wiki/File:J3_league_logo_2026.svg). A marca da MLS está sob CC BY-SA 4.0 (Major League Soccer, LLC); os arquivos e páginas originais mantêm os créditos e termos das demais marcas.
 - `assets/league-data-source/`: catálogo de nomes de competições do [openfootball/leagues](https://github.com/openfootball/leagues). Esse catálogo não contém elencos reais completos.
 
 As carreiras jogáveis continuam limitadas às dez ligas e aos oito clubes de exemplo já definidos no protótipo. O catálogo aberto fornece nomes de competições, não elencos completos; por isso, a lista baixada não foi apresentada como uma base completa do jogo original.

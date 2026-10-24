@@ -109,6 +109,7 @@ var sim_result_away_score := 0
 var market_candidates: Array[Dictionary] = []
 var transfer_offer: Dictionary = {}
 var asset_http: HTTPRequest
+var brand_mark_texture: Texture2D
 var asset_queue: Array[Dictionary] = []
 var active_asset_request: Dictionary = {}
 var asset_textures: Dictionary = {}
@@ -132,6 +133,10 @@ var save_slot_summaries: Array[Dictionary] = []
 
 func _ready() -> void:
 	rng.randomize()
+	var brand_image := Image.new()
+	var brand_bytes := FileAccess.get_file_as_bytes("res://assets/club-legacy-logo.png")
+	if not brand_bytes.is_empty() and brand_image.load_png_from_buffer(brand_bytes) == OK:
+		brand_mark_texture = ImageTexture.create_from_image(brand_image)
 	asset_http = HTTPRequest.new()
 	asset_http.timeout = 15.0
 	asset_http.request_completed.connect(_on_asset_download_completed)
@@ -1022,9 +1027,12 @@ func _panel(rect: Rect2, color: Color = PANEL) -> void:
 	draw_rect(rect, LINE, false, 1.0)
 
 func _draw_brand_mark(rect: Rect2) -> void:
-	var logo_path := "res://assets/club-legacy-logo.png"
-	if ResourceLoader.exists(logo_path):
-		_draw_texture_fit(load(logo_path), rect)
+	if brand_mark_texture != null:
+		_draw_texture_fit(brand_mark_texture, rect)
+		return
+	draw_circle(rect.get_center(), rect.size.y * 0.46, Color("f2f2e7"))
+	draw_circle(rect.get_center(), rect.size.y * 0.35, Color("226c46"))
+	_label("⚽", rect.position.x + rect.size.x * 0.2, rect.position.y + rect.size.y * 0.72, int(rect.size.y * 0.48), TEXT)
 
 func _button(rect: Rect2, text: String, active: bool = false) -> void:
 	draw_rect(rect, WSC_GREEN if active else Color("303655"), true)
@@ -1033,11 +1041,13 @@ func _button(rect: Rect2, text: String, active: bool = false) -> void:
 
 func _cached_asset_texture(cache_key: String) -> Texture2D:
 	if asset_textures.has(cache_key): return asset_textures[cache_key] as Texture2D
-	var cache_path := "user://asset-cache/%s.svg" % cache_key
-	if FileAccess.file_exists(cache_path):
+	for extension in ["svg", "png"]:
+		var cache_path := "user://asset-cache/%s.%s" % [cache_key, extension]
+		if not FileAccess.file_exists(cache_path): continue
 		var cached_bytes := FileAccess.get_file_as_bytes(cache_path)
 		var cached_image := Image.new()
-		if cached_image.load_svg_from_string(cached_bytes.get_string_from_utf8()) == OK:
+		var image_error: Error = cached_image.load_svg_from_string(cached_bytes.get_string_from_utf8()) if extension == "svg" else cached_image.load_png_from_buffer(cached_bytes)
+		if image_error == OK:
 			var cached_texture := ImageTexture.create_from_image(cached_image)
 			asset_textures[cache_key] = cached_texture
 			return cached_texture
@@ -1057,11 +1067,10 @@ func _download_all_assets() -> void:
 		var folder: String = str(league["folder"])
 		var flag_code: String = str(league["flag"])
 		_queue_asset_download("flags/4x3/%s" % flag_code, "https://raw.githubusercontent.com/lipis/flag-icons/refs/heads/main/flags/4x3/%s.svg" % flag_code)
-		var competition_file := _league_badge_file(league)
-		if competition_file != "":
-			var competition_key := "logos/%s/%s" % [folder, competition_file.trim_suffix(".svg")]
-			var competition_url := "https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, competition_file.uri_encode()]
-			_queue_asset_download(competition_key, competition_url)
+		var competition_asset := _league_badge_download(league)
+		if not competition_asset.is_empty():
+			var competition_key := "logos/%s/%s" % [folder, str(competition_asset["name"])]
+			_queue_asset_download(competition_key, str(competition_asset["url"]))
 		for team in league["teams"]:
 			var file_name := _logo_file_name(str(team))
 			var key := "logos/%s/%s" % [folder, file_name]
@@ -1155,13 +1164,35 @@ func _league_badge_file(league: Dictionary) -> String:
 	}
 	return str(badge_files.get(str(league["country"]), ""))
 
+func _league_badge_download(league: Dictionary) -> Dictionary:
+	var folder: String = str(league["folder"])
+	var local_file := _league_badge_file(league)
+	if local_file != "":
+		return {
+			"name":local_file.trim_suffix(".svg"),
+			"url":"https://raw.githubusercontent.com/JoseArroyave/football-logos/refs/heads/main/logos/%s/%s" % [folder, local_file.uri_encode()],
+			"extension":"svg"
+		}
+	var commons_assets: Dictionary = {
+		"Inglaterra":{"name":"Pl-logo-light", "url":"https://upload.wikimedia.org/wikipedia/commons/b/bf/Pl-logo-light.svg"},
+		"Itália":{"name":"Serie_A_logo_2022", "url":"https://upload.wikimedia.org/wikipedia/commons/e/e9/Serie_A_logo_2022.svg"},
+		"Estados Unidos":{"name":"MLS_Official_Logo", "url":"https://upload.wikimedia.org/wikipedia/commons/e/e3/MLS_Official_Logo.svg"},
+		"Japão":{"name":"J3_league_logo_2026", "url":"https://upload.wikimedia.org/wikipedia/commons/1/18/J3_league_logo_2026.svg"}
+	}
+	var commons_asset: Dictionary = commons_assets.get(str(league["country"]), {})
+	if commons_asset.is_empty(): return {}
+	commons_asset["extension"] = "svg"
+	return commons_asset
+
 func _queue_asset_download(cache_key: String, url: String) -> void:
 	if asset_download_abort: return
+	if asset_requests_started.has(cache_key): return
 	asset_requests_started[cache_key] = true
+	var extension := "png" if url.get_extension().to_lower() == "png" else "svg"
 	if not active_asset_request.is_empty() or not asset_queue.is_empty():
-		asset_queue.append({"key":cache_key, "url":url})
+		asset_queue.append({"key":cache_key, "url":url, "extension":extension})
 		return
-	asset_queue.append({"key":cache_key, "url":url})
+	asset_queue.append({"key":cache_key, "url":url, "extension":extension})
 	_start_next_asset_download()
 
 func _start_next_asset_download() -> void:
@@ -1181,10 +1212,12 @@ func _on_asset_download_completed(result: int, response_code: int, _headers: Pac
 	if not active_asset_request.is_empty() and not bool(active_asset_request.get("discard", false)):
 		if response_code == 200:
 			var image := Image.new()
-			if image.load_svg_from_string(body.get_string_from_utf8()) == OK:
+			var extension := str(active_asset_request.get("extension", "svg"))
+			var image_error: Error = image.load_png_from_buffer(body) if extension == "png" else image.load_svg_from_string(body.get_string_from_utf8())
+			if image_error == OK:
 				var key: String = str(active_asset_request["key"])
 				asset_textures[key] = ImageTexture.create_from_image(image)
-				var cache_path := "user://asset-cache/%s.svg" % key
+				var cache_path := "user://asset-cache/%s.%s" % [key, extension]
 				var absolute_dir := ProjectSettings.globalize_path(cache_path.get_base_dir())
 				DirAccess.make_dir_recursive_absolute(absolute_dir)
 				var cache_file := FileAccess.open(cache_path, FileAccess.WRITE)
@@ -1196,7 +1229,7 @@ func _on_asset_download_completed(result: int, response_code: int, _headers: Pac
 					asset_failure_hint = "Não foi possível salvar no aparelho."
 			else:
 				asset_download_failures += 1
-				asset_failure_hint = "A fonte enviou um arquivo SVG inválido."
+				asset_failure_hint = "A fonte enviou um arquivo de imagem inválido."
 		else:
 			asset_download_failures += 1
 			asset_failure_hint = _asset_request_error(result, response_code)
@@ -1402,8 +1435,14 @@ func _draw_select() -> void:
 		_label("★★★", 480, row_y + 26, 14, WSC_GOLD)
 	draw_rect(Rect2(630, 126, 610, 495), Color("17233a"), true)
 	_label("CLUBES MAIS FORTES", 630, 166, 13, Color("c6ced9"), 610, HORIZONTAL_ALIGNMENT_CENTER)
-	_draw_league_badge(league, Rect2(810, 180, 48, 48))
-	_label(str(league["country"]).to_upper() + "   •   " + str(league["name"]), 650, 245, 20, TEXT, 570, HORIZONTAL_ALIGNMENT_CENTER)
+	var competition_title := str(league["country"]).to_upper() + "  •  " + str(league["name"])
+	var title_width := ThemeDB.fallback_font.get_string_size(competition_title, HORIZONTAL_ALIGNMENT_LEFT, -1, 20).x
+	var badge_width := 38.0
+	var title_gap := 12.0
+	var title_group_width := badge_width + title_gap + title_width
+	var title_group_x := 935.0 - title_group_width * 0.5
+	_draw_league_badge(league, Rect2(title_group_x, 197, badge_width, badge_width))
+	_label(competition_title, title_group_x + badge_width + title_gap, 223, 20, TEXT)
 	var teams: Array = league["teams"]
 	_button(Rect2(645, 365, 48, 48), "◀")
 	_button(Rect2(1175, 365, 48, 48), "▶")
@@ -1488,14 +1527,15 @@ func _draw_team_badge(team: String, rect: Rect2) -> void:
 			return
 
 func _draw_league_badge(league: Dictionary, rect: Rect2) -> void:
-	var file_name := _league_badge_file(league)
-	if file_name != "":
-		var folder: String = str(league["folder"])
-		var path := "res://assets/football-logos-source/logos/%s/%s" % [folder, file_name]
-		if ResourceLoader.exists(path):
-			_draw_texture_fit(load(path), rect)
+	var folder: String = str(league["folder"])
+	var badge_asset := _league_badge_download(league)
+	if not badge_asset.is_empty():
+		var cache_key := "logos/%s/%s" % [folder, str(badge_asset["name"])]
+		var extension: String = str(badge_asset["extension"])
+		var local_path := "res://assets/football-logos-source/logos/%s/%s.%s" % [folder, str(badge_asset["name"]), extension]
+		if ResourceLoader.exists(local_path):
+			_draw_texture_fit(load(local_path), rect)
 			return
-		var cache_key := "logos/%s/%s" % [folder, file_name.trim_suffix(".svg")]
 		var logo_texture := _cached_asset_texture(cache_key)
 		if logo_texture != null:
 			_draw_texture_fit(logo_texture, rect)
